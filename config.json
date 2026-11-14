@@ -1,0 +1,36 @@
+{
+  "base_url": "https://ilinkai.weixin.qq.com",
+  "bot_type": "3",
+  "channel_version": "2.1.6",
+  "token_file": "token.json",
+  "token": "",
+  "signature": {
+    "enabled": true,
+    "secret": ""
+  },
+  "login": {
+    "auto_open_qr": true,
+    "poll_interval_ms": 2000
+  },
+  "poll": {
+    "timeout_seconds": 35,
+    "http_timeout_seconds": 45
+  },
+  "reconnect": {
+    "min_delay_ms": 1000,
+    "max_delay_ms": 60000
+  },
+  "inject": {
+    "type_delay_ms": 60,
+    "enter_delay_ms": 120,
+    "press_enter": true,
+    "max_retries": 5
+  },
+  "ack": {
+    "reply_text": "",
+    "max_acked_ids": 500
+  },
+  "filter": {
+    "allowed_senders": []
+  }
+}
