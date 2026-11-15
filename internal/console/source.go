@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"clawbot-ilink-relay/internal/relay"
+	"wetype/internal/relay"
 )
 
 // Options 控制控制台来源的行为。

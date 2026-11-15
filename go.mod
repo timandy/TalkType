@@ -1,3 +1,3 @@
-module clawbot-ilink-relay
+module wetype
 
 go 1.22

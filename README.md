@@ -1,9 +1,10 @@
-# clawbot-ilink-relay
+# WeType
 
-自研的微信 **iLink / ClawBot（小龙虾）** 客户端，用于替代 OpenClaw 的微信渠道插件。
+让微信消息直达 Windows 窗口与终端。
 
-程序通过官方 iLink Bot API 扫码登录，长轮询接收文本消息，再在 Windows 上用
-`SendInput` 的 Unicode 键事件把内容直接键入当前光标处并回车，**不占用剪贴板**。
+基于微信官方 iLink Bot API（ClawBot，小龙虾），扫码登录后长轮询接收文本消息，键入到当前光标处，
+或键入到用快捷键锁定的窗口与终端。终端在后台直接写入，不抢焦点，也不占用剪贴板。
+可替代 OpenClaw 的微信渠道插件。
 
 > 依赖 Windows Win32 API（`user32.dll` / `kernel32.dll`），只能在 Windows 上运行。
 > Linux / 云端环境只能编译与静态检查，无法验证真实键盘输入。
@@ -25,7 +26,7 @@
 ## 工作流程
 
 ```
-手机微信 ──► iLink 服务端 ──getupdates（长轮询）──► clawbot-ilink-relay
+手机微信 ──► iLink 服务端 ──getupdates（长轮询）──► WeType
                                                       │
                                     签名 → 去重 → 键入 → ACK
                                                       │
@@ -40,11 +41,11 @@
 
 ## 快速开始
 
-1. 准备 `clawbot-ilink-relay.exe` 与 `config.json`，放在同一目录
+1. 准备 `wetype.exe` 与 `config.json`，放在同一目录
 2. 运行程序：
 
    ```bat
-   clawbot-ilink-relay.exe
+   wetype.exe
    ```
 
 3. 首次运行会打印登录链接并自动打开浏览器，用手机微信扫码确认
@@ -54,13 +55,13 @@
 程序常驻运行，登录成功后无需再次扫码。强制重新登录：
 
 ```bat
-clawbot-ilink-relay.exe -relogin
+wetype.exe -relogin
 ```
 
 指定配置文件：
 
 ```bat
-clawbot-ilink-relay.exe -config D:\clawbot\config.json
+wetype.exe -config D:\wetype\config.json
 ```
 
 ## 编译
@@ -70,13 +71,13 @@ clawbot-ilink-relay.exe -config D:\clawbot\config.json
 在 Windows 上直接编译：
 
 ```bat
-go build -trimpath -ldflags "-s -w" -o clawbot-ilink-relay.exe ./cmd/clawbot-ilink-relay
+go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 ```
 
 在 Linux / macOS 上交叉编译：
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o clawbot-ilink-relay.exe ./cmd/clawbot-ilink-relay
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 ```
 
 静态检查（云端可用）：
@@ -84,7 +85,7 @@ GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o clawbot-ilink-r
 ```bash
 go build ./...
 go vet ./...
-GOOS=windows GOARCH=amd64 go build -o /tmp/clawbot-ilink-relay.exe ./cmd/clawbot-ilink-relay
+GOOS=windows GOARCH=amd64 go build -o /tmp/wetype.exe ./cmd/wetype
 GOOS=windows GOARCH=amd64 go vet ./...
 ```
 
@@ -222,7 +223,7 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
     终端停靠在 IDE 主窗口里时也能识别。终端单独成窗口时约 0.1 秒。
     IDE 只会调整正在显示的终端的尺寸，由此确定锁定哪个标签。Reworked 2025 和 Classic 引擎、Window / Float / 停靠等显示模式都适用。
     通知里会显示锁定标签的提示符，方便确认。
-  - 也可以在目标终端里运行 `clawbot-ilink-relay.exe -lock` 精确锁定它；`-unlock` 解除。
+  - 也可以在目标终端里运行 `wetype.exe -lock` 精确锁定它；`-unlock` 解除。
 - **其他窗口**（浏览器、IDE 的代码编辑器、终端被隐藏的 IDE 窗口等）：发送时短暂切到该窗口输入，再切回原来的窗口。
   凡是探测不到正在显示的终端，都按这种方式处理。
 - 锁定的窗口或终端关闭后，消息不再发送（该消息被丢弃），并弹出提示。
@@ -240,7 +241,7 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 控制台来源的用法：
 
 ```bat
-clawbot-ilink-relay.exe -source console
+wetype.exe -source console
 ```
 
 每输入一行并回车，就当作收到一条消息。先切到目标终端按 Alt+. 锁定，再回到本窗口输入即可。
@@ -257,7 +258,7 @@ clawbot-ilink-relay.exe -source console
 | 频繁出现重新扫码 | 微信侧主动失效或重复绑定顶号，重新扫码即可 |
 | 输入到了别的窗口 | 未锁定时键入跟随当前前台焦点；按 Alt+. 锁定目标窗口或终端，见上文和 [docs/window-lock.md](docs/window-lock.md) |
 
-日志直接输出到控制台，前缀为 `[clawbot]`，可据此判断登录、收消息、ACK 与重连状态。
+日志直接输出到控制台，前缀为 `[wetype]`，可据此判断登录、收消息、ACK 与重连状态。
 
 ## 安全与限制
 
@@ -271,9 +272,9 @@ clawbot-ilink-relay.exe -source console
 ## 项目结构
 
 ```
-clawbot-ilink-relay/
+wetype/
 ├── cmd/
-│   └── clawbot-ilink-relay/
+│   └── wetype/
 │       └── main.go          程序入口：参数、选择消息来源、装配投递与锁定
 ├── internal/
 │   ├── config/

@@ -30,7 +30,7 @@ const (
 
 	copyLock   = 1
 	copyUnlock = 2
-	className  = "ClawbotIlinkRelayHost"
+	className  = "WeTypeHost"
 )
 
 var hwndMessage = ^uintptr(2) // HWND_MESSAGE = -3
@@ -321,12 +321,12 @@ func sendCommand(kind uintptr, data []byte) error {
 	return nil
 }
 
-// SendLock 通知正在运行的 clawbot-ilink-relay 锁定 pid 所在的终端。
+// SendLock 通知正在运行的本程序实例锁定 pid 所在的终端。
 func SendLock(pid uint32) error {
 	b := make([]byte, 4)
 	binary.LittleEndian.PutUint32(b, pid)
 	return sendCommand(copyLock, b)
 }
 
-// SendUnlock 通知正在运行的 clawbot-ilink-relay 解除锁定。
+// SendUnlock 通知正在运行的本程序实例解除锁定。
 func SendUnlock() error { return sendCommand(copyUnlock, nil) }

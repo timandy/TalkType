@@ -5,7 +5,7 @@ package winlock
 import (
 	"testing"
 
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/wintype"
 )
 
 func TestIsDescendant(t *testing.T) {

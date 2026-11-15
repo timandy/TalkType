@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/wintype"
 )
 
 const maxTitleRunes = 40

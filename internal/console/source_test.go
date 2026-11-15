@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"clawbot-ilink-relay/internal/relay"
+	"wetype/internal/relay"
 )
 
 func TestRun_SendsNonEmptyLinesUntilEOF(t *testing.T) {

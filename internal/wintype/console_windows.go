@@ -28,7 +28,7 @@ import (
 )
 
 // HelperArg 是辅助子进程模式的命令行标记，main 需要在解析参数前识别它。
-const HelperArg = "--clawbot-console-helper"
+const HelperArg = "--wetype-console-helper"
 
 const (
 	detachedProcess   = 0x00000008
@@ -275,7 +275,7 @@ func TypeToConsoleWithRetry(pid uint32, text string, opts Options) error {
 // RunConsoleHelper 是辅助子进程的入口，返回进程退出码。
 func RunConsoleHelper(args []string) int {
 	if len(args) == 0 || args[0] != "serve" {
-		fmt.Fprintln(os.Stderr, "用法：--clawbot-console-helper serve")
+		fmt.Fprintln(os.Stderr, "用法：--wetype-console-helper serve")
 		return 2
 	}
 	// 挂接期间目标控制台里按 Ctrl+C、Ctrl+Break 或关闭窗口，都会通知到本进程，

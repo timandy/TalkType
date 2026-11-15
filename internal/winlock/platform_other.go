@@ -5,7 +5,7 @@ package winlock
 import (
 	"context"
 
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/wintype"
 )
 
 // Start 在非 Windows 平台不可用。

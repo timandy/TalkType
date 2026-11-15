@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	toastClassName = "ClawbotIlinkRelayToast"
+	toastClassName = "WeTypeToast"
 	toastTimerID   = 2
 	toastFrame     = 15 * time.Millisecond
 

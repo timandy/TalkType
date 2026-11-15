@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/wintype"
 )
 
 type fakeInjector struct {

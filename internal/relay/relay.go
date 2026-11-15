@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sync"
 
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/wintype"
 )
 
 // Message 是一条待投递的文本消息。

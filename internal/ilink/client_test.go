@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"clawbot-ilink-relay/internal/config"
-	"clawbot-ilink-relay/internal/relay"
-	"clawbot-ilink-relay/internal/store"
+	"wetype/internal/config"
+	"wetype/internal/relay"
+	"wetype/internal/store"
 )
 
 func newTestClient(t *testing.T, mutate func(*config.Config)) *Client {
@@ -303,7 +303,7 @@ func TestSendText(t *testing.T) {
 		t.Fatalf("path=%q msg=%v", gotPath, m)
 	}
 	if m.ToUserID != "user1" || m.MessageType != msgTypeBot || m.MessageState != stateFinish || m.ContextToken != "ctx" ||
-		!strings.HasPrefix(m.ClientID, "clawbot-") || len(m.ItemList) != 1 || m.ItemList[0].TextItem.Text != "pong" {
+		!strings.HasPrefix(m.ClientID, "wetype-") || len(m.ItemList) != 1 || m.ItemList[0].TextItem.Text != "pong" {
 		t.Errorf("msg = %+v", m)
 	}
 }

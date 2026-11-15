@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/wintype"
 )
 
 // 视为“终端会话”的 shell 进程。

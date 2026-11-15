@@ -1,4 +1,4 @@
-// clawbot-ilink-relay 把收到的文本消息输入到当前光标处并回车（不占用剪贴板），
+// WeType 把收到的文本消息输入到当前光标处并回车（不占用剪贴板），
 // 或输入到用 Alt+. 锁定的窗口或终端（终端在后台直接写入，不切换窗口）。
 //
 // 消息来源可替换：
@@ -21,18 +21,18 @@ import (
 	"syscall"
 	"time"
 
-	"clawbot-ilink-relay/internal/config"
-	"clawbot-ilink-relay/internal/console"
-	"clawbot-ilink-relay/internal/ilink"
-	"clawbot-ilink-relay/internal/relay"
-	"clawbot-ilink-relay/internal/store"
-	"clawbot-ilink-relay/internal/winlock"
-	"clawbot-ilink-relay/internal/wintype"
+	"wetype/internal/config"
+	"wetype/internal/console"
+	"wetype/internal/ilink"
+	"wetype/internal/relay"
+	"wetype/internal/store"
+	"wetype/internal/winlock"
+	"wetype/internal/wintype"
 )
 
 const consoleCursorDelay = 3 * time.Second
 
-var logger = log.New(os.Stdout, "[clawbot] ", log.LstdFlags)
+var logger = log.New(os.Stdout, "[wetype] ", log.LstdFlags)
 
 func main() {
 	// 后台写终端的辅助子进程，必须在任何其他初始化之前处理。

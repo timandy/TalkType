@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"clawbot-ilink-relay/internal/config"
-	"clawbot-ilink-relay/internal/store"
-	"clawbot-ilink-relay/internal/relay"
+	"wetype/internal/config"
+	"wetype/internal/store"
+	"wetype/internal/relay"
 )
 
 const (
@@ -449,7 +449,7 @@ func (c *Client) sendText(ctx context.Context, to, text, contextToken string) er
 	req := SendMessageReq{
 		Msg: &WeixinMessage{
 			ToUserID:     to,
-			ClientID:     "clawbot-" + randomHex(8),
+			ClientID:     "wetype-" + randomHex(8),
 			MessageType:  msgTypeBot,
 			MessageState: stateFinish,
 			ContextToken: contextToken,

@@ -1,6 +1,6 @@
 # 窗口与终端锁定：原理与支持范围
 
-本文说明 clawbot-ilink-relay 如何把消息投递到目标位置，支持哪些窗口，以及每一类的实现原理和已验证情况。
+本文说明 WeType 如何把消息投递到目标位置，支持哪些窗口，以及每一类的实现原理和已验证情况。
 
 ## 1. 整体结构
 
@@ -25,8 +25,8 @@
 | 已锁定，在**别的**窗口或终端标签里按 Alt+. | 锁定切换到当前这个，通知显示“已切换至…” |
 | 已锁定，在**锁定的那个**里按 Alt+. | 解除锁定，恢复为输入到当前光标 |
 | 在任意位置按 Alt+/ | 直接解除锁定 |
-| 在目标终端里运行 `clawbot-ilink-relay.exe -lock` | 精确锁定这个终端 |
-| 运行 `clawbot-ilink-relay.exe -unlock` | 解除锁定 |
+| 在目标终端里运行 `wetype.exe -lock` | 精确锁定这个终端 |
+| 运行 `wetype.exe -unlock` | 解除锁定 |
 
 “是不是同一个目标”的判断：终端按 shell 进程 PID + 创建时间比较；窗口按窗口句柄比较；
 锁定的是终端、但这次分不清是哪个标签时，按所在窗口比较。
@@ -66,7 +66,7 @@
   每个标签对应一个独立的宿主进程（`OpenConsole.exe` 或 `conhost.exe`）。
 
 一个进程同一时间只能挂在一个控制台上，而本程序自己的控制台要用来打印日志，所以挂接和写入由**辅助进程**完成：
-同一个 exe 以 `--clawbot-console-helper serve` 参数、`DETACHED_PROCESS` 方式启动，通过 stdin/stdout 逐行交换 JSON。
+同一个 exe 以 `--wetype-console-helper serve` 参数、`DETACHED_PROCESS` 方式启动，通过 stdin/stdout 逐行交换 JSON。
 辅助进程在第一次使用时启动，之后**常驻复用**，省去每次启动进程的约 45 毫秒；本程序退出时它的 stdin 被关闭，随之退出。
 请求还没送达时辅助进程已退出，会自动重启并重发；请求已送达但中途出错则不重发，避免重复输入。
 挂接期间目标控制台里的 Ctrl+C、关闭等事件也会通知到辅助进程，它会忽略这些事件，不会因此退出。
@@ -148,7 +148,7 @@ IDE 只会调整**正在显示**的终端的尺寸，尺寸变化会通过 ConPT
 
 ### 5.5 -lock 命令
 
-在目标终端里运行 `clawbot-ilink-relay.exe -lock`。它用 `FindWindowExW(HWND_MESSAGE, …)` 找到正在运行的实例的
+在目标终端里运行 `wetype.exe -lock`。它用 `FindWindowExW(HWND_MESSAGE, …)` 找到正在运行的实例的
 隐藏窗口，通过 `WM_COPYDATA` 发送自己父进程（运行这条命令的 shell）的 PID，由正在运行的实例锁定该 shell 所在的控制台。
 这条路径不需要任何探测，可精确指定标签。
 

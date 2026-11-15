@@ -1,4 +1,4 @@
-// Package config 定义 clawbot-ilink-relay 的配置结构、默认值与校验规则。
+// Package config 定义 WeType 的配置结构、默认值与校验规则。
 package config
 
 import (
