@@ -44,7 +44,7 @@ func (s *Source) Name() string { return "控制台" }
 
 // Run 实现 relay.Source。输入结束（EOF）或 ctx 结束时返回。
 func (s *Source) Run(ctx context.Context, handle relay.Handler) error {
-	s.logger.Println("消息来源：控制台。在这里输入一行文字并回车，就会当作一条消息发送；Ctrl+C 退出。")
+	s.logger.Println("消息来源：控制台。每输入一行并回车即发送一条消息，按 Ctrl+C 退出。")
 
 	lines := make(chan string)
 	errc := make(chan error, 1)
@@ -82,7 +82,7 @@ func (s *Source) Run(ctx context.Context, handle relay.Handler) error {
 		}
 
 		if s.opts.CursorDelay > 0 && (s.opts.ToCursor == nil || s.opts.ToCursor()) {
-			s.logger.Printf("%s 后输入到当前光标位置，请切到目标窗口……", s.opts.CursorDelay)
+			s.logger.Printf("将在 %s 后输入到当前光标位置，请切换至目标窗口。", s.opts.CursorDelay)
 			select {
 			case <-ctx.Done():
 				return nil
@@ -93,13 +93,13 @@ func (s *Source) Run(ctx context.Context, handle relay.Handler) error {
 		err := handle(ctx, relay.Message{From: "控制台", Text: line})
 		switch {
 		case err == nil:
-			s.logger.Printf("已发送: %s", line)
+			s.logger.Printf("已发送：%s", line)
 		case errors.Is(err, relay.ErrDiscarded):
-			s.logger.Println("锁定的窗口或终端已关闭，这条没有发送。按 Alt+/ 解除锁定。")
+			s.logger.Println("消息未发送：锁定的目标已关闭。")
 		case ctx.Err() != nil:
 			return nil
 		default:
-			s.logger.Printf("发送失败: %v", err)
+			s.logger.Printf("发送失败：%v", err)
 		}
 	}
 }

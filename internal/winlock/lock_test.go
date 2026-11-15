@@ -18,6 +18,7 @@ type fixture struct {
 	consoles map[uintptr][]consoleMatch // 每个窗口里的终端会话
 	procs    map[uint32]bool            // 存活的进程
 	notes    [][2]string
+	levels   []Level
 	cursor   []string
 	windowed []uintptr
 	consoled []uint32
@@ -62,7 +63,10 @@ func newFixture() *fixture {
 			return f.typeErr
 		},
 	}
-	f.m.SetNotifier(func(title, msg string) { f.notes = append(f.notes, [2]string{title, msg}) })
+	f.m.SetNotifier(func(level Level, title, msg string) {
+		f.notes = append(f.notes, [2]string{title, msg})
+		f.levels = append(f.levels, level)
+	})
 	return f
 }
 
@@ -86,7 +90,7 @@ func TestToggle_LockWindowAndUnlockInSameWindow(t *testing.T) {
 	if !f.m.IsLocked() || f.m.tgt.kind != kindWindow || f.m.tgt.hwnd != 1 {
 		t.Fatalf("tgt = %+v", f.m.tgt)
 	}
-	if n := f.lastNote(); n[0] != "已锁定当前窗口" || !strings.Contains(n[1], "Chrome") || !strings.Contains(n[1], "切换") {
+	if n := f.lastNote(); n[0] != "已锁定窗口" || !strings.Contains(n[1], "目标：Chrome") || !strings.Contains(n[1], "切换") {
 		t.Errorf("note = %v", n)
 	}
 
@@ -112,7 +116,7 @@ func TestToggle_OtherWindowSwitchesLock(t *testing.T) {
 	if !f.m.IsLocked() || f.m.tgt.hwnd != 2 {
 		t.Fatalf("tgt = %+v", f.m.tgt)
 	}
-	if n := f.lastNote(); n[0] != "已切换到当前窗口" || !strings.Contains(n[1], "Notepad") {
+	if n := f.lastNote(); n[0] != "已切换至窗口" || !strings.Contains(n[1], "目标：Notepad") {
 		t.Errorf("note = %v", n)
 	}
 }
@@ -126,14 +130,14 @@ func TestToggle_SwitchBetweenTerminalTabsAndBack(t *testing.T) {
 	f.m.resolve = func(uintptr, uint32) (consoleMatch, int) { return active, 1 }
 
 	f.m.Toggle()
-	if f.m.tgt.pid != 42 || f.lastNote()[0] != "已锁定当前终端" || !strings.Contains(f.lastNote()[1], `IDEA · PS E:\a>`) {
+	if f.m.tgt.pid != 42 || f.lastNote()[0] != "已锁定终端" || !strings.Contains(f.lastNote()[1], `IDEA · PS E:\a>`) {
 		t.Fatalf("tgt=%+v note=%v", f.m.tgt, f.lastNote())
 	}
 
 	// 同一窗口里换了一个标签：切换，而不是解除
 	active = consoleMatch{PID: 43, Start: 1, Line: `PS E:\b>`}
 	f.m.Toggle()
-	if !f.m.IsLocked() || f.m.tgt.pid != 43 || f.lastNote()[0] != "已切换到当前终端" {
+	if !f.m.IsLocked() || f.m.tgt.pid != 43 || f.lastNote()[0] != "已切换至终端" {
 		t.Fatalf("tgt=%+v note=%v", f.m.tgt, f.lastNote())
 	}
 
@@ -186,7 +190,7 @@ func TestToggle_LockTerminalInBackground(t *testing.T) {
 		t.Fatalf("tgt = %+v", f.m.tgt)
 	}
 	n := f.lastNote()
-	if n[0] != "已锁定当前终端" || !strings.Contains(n[1], "GoLand · Windows PowerShell") || !strings.Contains(n[1], "后台") {
+	if n[0] != "已锁定终端" || !strings.Contains(n[1], "目标：GoLand · Windows PowerShell\n") || !strings.Contains(n[1], "后台") {
 		t.Errorf("note = %v", n)
 	}
 
@@ -220,7 +224,7 @@ func TestToggle_AmbiguousTerminalsFallBackToWindow(t *testing.T) {
 	if f.m.tgt.kind != kindWindow || f.m.tgt.hwnd != 1 {
 		t.Fatalf("tgt = %+v", f.m.tgt)
 	}
-	if n := f.lastNote(); !strings.Contains(n[1], "2 个终端") || !strings.Contains(n[1], "-lock") {
+	if n := f.lastNote(); !strings.Contains(n[1], "2 个可见终端") || !strings.Contains(n[1], "-lock") {
 		t.Errorf("note = %v", n)
 	}
 }
@@ -231,7 +235,7 @@ func TestToggle_RejectsOwnTerminal(t *testing.T) {
 	f.fg = 1
 	f.m.resolve = func(uintptr, uint32) (consoleMatch, int) { return consoleMatch{}, -1 }
 	f.m.Toggle()
-	if f.m.IsLocked() || f.lastNote()[0] != "这个终端不能锁定" {
+	if f.m.IsLocked() || f.lastNote()[0] != "无法锁定此终端" {
 		t.Errorf("locked=%v note=%v", f.m.IsLocked(), f.lastNote())
 	}
 }
@@ -272,7 +276,7 @@ func TestLockConsolePID(t *testing.T) {
 	f := newFixture()
 	f.procs[7] = true
 	f.m.LockConsolePID(7)
-	if f.m.tgt.kind != kindConsole || f.m.tgt.pid != 7 || f.lastNote()[0] != "已锁定这个终端" {
+	if f.m.tgt.kind != kindConsole || f.m.tgt.pid != 7 || f.lastNote()[0] != "已锁定终端" {
 		t.Fatalf("tgt=%+v note=%v", f.m.tgt, f.lastNote())
 	}
 
@@ -284,7 +288,7 @@ func TestLockConsolePID(t *testing.T) {
 	}
 
 	f.m.LockConsolePID(9) // 无控制台
-	if f.m.tgt.pid != 8 || f.lastNote()[0] != "没能锁定终端" {
+	if f.m.tgt.pid != 8 || f.lastNote()[0] != "终端锁定失败" {
 		t.Errorf("failed lock should keep previous target: tgt=%+v note=%v", f.m.tgt, f.lastNote())
 	}
 }
@@ -292,7 +296,7 @@ func TestLockConsolePID(t *testing.T) {
 func TestUnlock_WhenNotLocked(t *testing.T) {
 	f := newFixture()
 	f.m.Unlock()
-	if f.lastNote()[0] != "当前没有锁定" {
+	if f.lastNote()[0] != "未锁定任何目标" {
 		t.Errorf("note = %v", f.lastNote())
 	}
 }
@@ -389,5 +393,50 @@ func TestConsoleName(t *testing.T) {
 		if got := consoleName(tc.win, tc.c); got != tc.want {
 			t.Errorf("consoleName(%q,%+v) = %q, want %q", tc.win, tc.c, got, tc.want)
 		}
+	}
+}
+
+func TestNotificationLevels(t *testing.T) {
+	f := newFixture()
+	f.addWindow(1, "Chrome")
+	f.fg = 1
+	f.m.Toggle() // 锁定
+	f.m.Toggle() // 解除
+	f.m.Notify("消息未发送", "x")
+	f.m.LockConsolePID(99) // 失败
+	want := []Level{LevelSuccess, LevelInfo, LevelWarning, LevelError}
+	if len(f.levels) != len(want) {
+		t.Fatalf("levels = %v", f.levels)
+	}
+	for i, w := range want {
+		if f.levels[i] != w {
+			t.Errorf("note %d %q: level = %d, want %d", i, f.notes[i][0], f.levels[i], w)
+		}
+	}
+}
+
+// 提示语里不能出现程序名：exe 可能被改名。
+func TestNotificationsDoNotMentionProgramName(t *testing.T) {
+	f := newFixture()
+	f.addWindow(1, "IDEA")
+	f.addWindow(2, "self")
+	f.pids[2] = 100
+	f.fg = 1
+	f.addConsole(1, 42, "a")
+	f.addConsole(1, 43, "b")
+	f.m.Toggle() // 多个终端，提示 -lock
+	f.fg = 2
+	f.m.Toggle() // 本程序窗口
+	f.m.resolve = func(uintptr, uint32) (consoleMatch, int) { return consoleMatch{}, -1 }
+	f.fg = 1
+	f.m.Toggle() // 本程序所在终端
+	f.m.LockConsolePID(99)
+	for _, n := range f.notes {
+		if strings.Contains(n[0]+n[1], "clawbot") || strings.Contains(n[0]+n[1], ".exe") {
+			t.Errorf("notification mentions program name: %v", n)
+		}
+	}
+	if len(f.notes) < 4 {
+		t.Fatalf("notes = %v", f.notes)
 	}
 }

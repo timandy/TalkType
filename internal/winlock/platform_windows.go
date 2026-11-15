@@ -19,7 +19,7 @@ const (
 	wmHotkey   = 0x0312
 	wmTimer    = 0x0113
 	wmCopyData = 0x004A
-	wmNotify   = 0x8000 + 1 // WM_APP+1：通知线程弹出气泡
+	wmNotify   = 0x8000 + 1 // WM_APP+1：让 UI 线程弹出排队的提示卡片
 
 	modAlt      = 0x0001
 	modNoRepeat = 0x4000
@@ -31,21 +31,9 @@ const (
 	// 所以单击会有这么长的延迟。
 	doubleTapWindow = 350 * time.Millisecond
 
-	nimAdd    = 0
-	nimModify = 1
-	nimDelete = 2
-
-	nifIcon = 0x02
-	nifTip  = 0x04
-	nifInfo = 0x10
-
-	niifInfo = 0x01
-
-	idiApplication = 32512
-	copyLock       = 1
-	copyUnlock     = 2
-	className      = "ClawbotIlinkRelayHost"
-	trayTip        = "clawbot-ilink-relay（Alt+/ 锁定窗口）"
+	copyLock   = 1
+	copyUnlock = 2
+	className  = "ClawbotIlinkRelayHost"
 )
 
 var hwndMessage = ^uintptr(2) // HWND_MESSAGE = -3
@@ -53,7 +41,6 @@ var hwndMessage = ^uintptr(2) // HWND_MESSAGE = -3
 var (
 	user32               = syscall.NewLazyDLL("user32.dll")
 	kernel32             = syscall.NewLazyDLL("kernel32.dll")
-	shell32              = syscall.NewLazyDLL("shell32.dll")
 	procRegisterClassExW = user32.NewProc("RegisterClassExW")
 	procUnregisterClassW = user32.NewProc("UnregisterClassW")
 	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
@@ -70,9 +57,7 @@ var (
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	procRegisterHotKey   = user32.NewProc("RegisterHotKey")
 	procUnregisterHotKey = user32.NewProc("UnregisterHotKey")
-	procLoadIconW        = user32.NewProc("LoadIconW")
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
-	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
 )
 
 type wndClassEx struct {
@@ -101,46 +86,26 @@ type winMsg struct {
 	pt      point
 }
 
-type guid struct {
-	d1 uint32
-	d2 uint16
-	d3 uint16
-	d4 [8]byte
-}
-
-type notifyIconData struct {
-	cbSize           uint32
-	hWnd             uintptr
-	uID              uint32
-	uFlags           uint32
-	uCallbackMessage uint32
-	hIcon            uintptr
-	szTip            [128]uint16
-	dwState          uint32
-	dwStateMask      uint32
-	szInfo           [256]uint16
-	uVersion         uint32
-	szInfoTitle      [64]uint16
-	dwInfoFlags      uint32
-	guidItem         guid
-	hBalloonIcon     uintptr
-}
-
 type copyDataStruct struct {
 	dwData uintptr
 	cbData uint32
 	lpData uintptr
 }
 
-type balloon struct{ title, msg string }
+type notice struct {
+	level      Level
+	title, msg string
+}
 
-// host 是承载热键和托盘图标的隐藏窗口，所有 UI 调用都在它所在的线程上完成。
+// host 是承载热键和提示卡片的隐藏窗口，所有 UI 调用都在它所在的线程上完成。
 type host struct {
 	m    *Manager
 	hwnd uintptr
 
 	mu    sync.Mutex
-	queue []balloon
+	queue []notice
+
+	toasts toaster
 
 	// 只在窗口线程上访问。
 	tapPending bool
@@ -150,37 +115,10 @@ type host struct {
 // 窗口过程是进程级回调，只会有一个 host 实例。
 var active *host
 
-func copyUTF16(dst []uint16, s string) {
-	u, _ := syscall.UTF16FromString(s)
-	if len(u) > len(dst) {
-		u = u[:len(dst)]
-		u[len(u)-1] = 0
-	}
-	copy(dst, u)
-}
-
-func (h *host) icon(op uintptr, flags uint32, b *balloon) bool {
-	nid := notifyIconData{hWnd: h.hwnd, uID: 1, uFlags: flags}
-	nid.cbSize = uint32(unsafe.Sizeof(nid))
-	if flags&nifIcon != 0 {
-		ic, _, _ := procLoadIconW.Call(0, idiApplication)
-		nid.hIcon = ic
-	}
-	if flags&nifTip != 0 {
-		copyUTF16(nid.szTip[:], trayTip)
-	}
-	if b != nil {
-		copyUTF16(nid.szInfoTitle[:], b.title)
-		copyUTF16(nid.szInfo[:], b.msg)
-		nid.dwInfoFlags = niifInfo
-	}
-	r, _, _ := procShellNotifyIconW.Call(op, uintptr(unsafe.Pointer(&nid)))
-	return r != 0
-}
-
-func (h *host) enqueue(title, msg string) {
+// enqueue 可在任意 goroutine 调用：把通知排队，再让 UI 线程弹出。
+func (h *host) enqueue(level Level, title, msg string) {
 	h.mu.Lock()
-	h.queue = append(h.queue, balloon{title, msg})
+	h.queue = append(h.queue, notice{level, title, msg})
 	h.mu.Unlock()
 	procPostMessageW.Call(h.hwnd, wmNotify, 0, 0)
 }
@@ -190,8 +128,8 @@ func (h *host) drain() {
 	q := h.queue
 	h.queue = nil
 	h.mu.Unlock()
-	for i := range q {
-		h.icon(nimModify, nifInfo, &q[i])
+	for _, n := range q {
+		h.toasts.show(n.level, n.title, n.msg)
 	}
 }
 
@@ -230,6 +168,9 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if h != nil && wParam == tapTimerID {
 			h.onTapTimeout()
 		}
+		if h != nil && wParam == toastTimerID {
+			h.toasts.tick()
+		}
 		return 0
 	case wmCopyData:
 		if h == nil || lParam == 0 {
@@ -262,7 +203,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if h != nil {
 			h.m.SetNotifier(nil)
 			procUnregisterHotKey.Call(hwnd, hotkeyID)
-			h.icon(nimDelete, 0, nil)
+			h.toasts.closeAll()
 		}
 		procPostQuitMessage.Call(0)
 		return 0
@@ -271,7 +212,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	return r
 }
 
-// Start 注册 Alt+/ 全局热键和托盘图标，并在 ctx 结束时清理。
+// Start 注册 Alt+/ 全局热键并准备提示卡片，在 ctx 结束时清理。
 // 热键被其他程序占用时返回错误，此时锁定功能不可用，其余功能不受影响。
 func (m *Manager) Start(ctx context.Context) error {
 	ready := make(chan error, 1)
@@ -282,8 +223,13 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) run(ctx context.Context, ready chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// 本线程按显示器 DPI 工作：提示卡片按实际 DPI 渲染，不会被系统拉伸变糊。
+	if procSetThreadDpiCtx.Find() == nil {
+		procSetThreadDpiCtx.Call(dpiPerMonitorV2)
+	}
 
 	hInst, _, _ := procGetModuleHandleW.Call(0)
+	registerToastClass(hInst)
 	cls, _ := syscall.UTF16PtrFromString(className)
 	wc := wndClassEx{
 		lpfnWndProc:   syscall.NewCallback(wndProc),
@@ -305,6 +251,7 @@ func (m *Manager) run(ctx context.Context, ready chan<- error) {
 	}
 
 	h := &host{m: m, hwnd: hwnd}
+	h.toasts.host = hwnd
 	active = h
 	defer func() { active = nil }()
 
@@ -313,7 +260,6 @@ func (m *Manager) run(ctx context.Context, ready chan<- error) {
 		ready <- fmt.Errorf("注册 Alt+/ 失败（可能已被其他程序占用）: %v", err)
 		return
 	}
-	h.icon(nimAdd, nifIcon|nifTip, nil)
 	m.SetNotifier(h.enqueue)
 	ready <- nil
 
@@ -342,7 +288,7 @@ func sendCommand(kind uintptr, data []byte) error {
 	cls, _ := syscall.UTF16PtrFromString(className)
 	hwnd, _, _ := procFindWindowExW.Call(hwndMessage, 0, uintptr(unsafe.Pointer(cls)), 0)
 	if hwnd == 0 {
-		return fmt.Errorf("没有找到正在运行的 clawbot-ilink-relay")
+		return fmt.Errorf("未找到正在运行的本程序实例")
 	}
 	cds := copyDataStruct{dwData: kind, cbData: uint32(len(data))}
 	if len(data) > 0 {
@@ -351,7 +297,7 @@ func sendCommand(kind uintptr, data []byte) error {
 	r, _, _ := procSendMessageW.Call(hwnd, wmCopyData, 0, uintptr(unsafe.Pointer(&cds)))
 	runtime.KeepAlive(data)
 	if r == 0 {
-		return fmt.Errorf("clawbot-ilink-relay 没有接受请求")
+		return fmt.Errorf("正在运行的本程序实例未接受请求")
 	}
 	return nil
 }

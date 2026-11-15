@@ -10,13 +10,14 @@
 //     否则把锁定切换到当前目标；
 //   - 快速连按两下 Alt+/ ：无论在哪里，直接解除锁定。
 //
-// 状态变化通过 Windows 通知栏提示。
+// 状态变化在屏幕右下角弹出提示卡片。
 package winlock
 
 import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"clawbot-ilink-relay/internal/wintype"
@@ -85,7 +86,7 @@ type Manager struct {
 	mu     sync.Mutex
 	locked bool
 	tgt    target
-	notify func(title, msg string)
+	notify func(level Level, title, msg string)
 
 	// 以下为可替换的系统调用，便于测试。
 	ownPID      uint32
@@ -146,11 +147,19 @@ func (m *Manager) Unlock() {
 	m.locked, m.tgt = false, target{}
 	m.mu.Unlock()
 	if was {
-		m.Notify("已解除锁定", "已恢复为输入到当前光标位置。")
+		m.notifyAs(LevelInfo, "已解除锁定", "消息将输入到当前光标位置")
 	} else {
-		m.Notify("当前没有锁定", "消息会输入到当前光标位置。")
+		m.notifyAs(LevelInfo, "未锁定任何目标", "消息将输入到当前光标位置")
 	}
 }
+
+// 通知正文按行组织：目标、发送方式、操作提示各占一行，每行不超过卡片宽度。
+const (
+	lineBackground = "方式：后台发送，不切换窗口"
+	lineForeground = "方式：切换至该窗口后发送"
+	lineUnlock     = "再次按 Alt+/ 解除锁定"
+	lineUnlockAny  = "连按两次 Alt+/ 解除锁定"
+)
 
 // Toggle 按当前前台窗口处理一次 Alt+/ 单击。
 func (m *Manager) Toggle() { m.press(m.foreground()) }
@@ -158,20 +167,19 @@ func (m *Manager) Toggle() { m.press(m.foreground()) }
 // press 处理一次 Alt+/ 单击，h 是按下时的前台窗口。
 func (m *Manager) press(h uintptr) {
 	if h == 0 {
-		m.Notify("没找到当前窗口", "请点一下要锁定的窗口后再按 Alt+/ 。连按两下 Alt+/ 可解除锁定。")
+		m.notifyAs(LevelWarning, "未检测到活动窗口", "请先激活目标窗口，再按 Alt+/")
 		return
 	}
 	title, class, pid := m.describe(h)
 	if pid == m.ownPID || protectedClasses[class] {
-		m.Notify("这个窗口不能锁定", "请先切换到要接收消息的窗口，再按 Alt+/ 。连按两下 Alt+/ 可解除锁定。")
+		m.notifyAs(LevelWarning, "无法锁定此窗口", "桌面、任务栏和本程序窗口不支持锁定")
 		return
 	}
 	winName := displayName(title)
 
 	c, n := m.resolve(h, pid)
 	if n < 0 {
-		m.Notify("这个终端不能锁定", "这是 clawbot-ilink-relay 自己所在的终端。请切到别的窗口或标签再按 Alt+/ ，"+
-			"或在目标终端里运行 clawbot-ilink-relay -lock 。")
+		m.notifyAs(LevelWarning, "无法锁定此终端", "本程序所在的终端不支持锁定\n请切换至其他窗口或终端标签")
 		return
 	}
 	next := target{kind: kindWindow, hwnd: h}
@@ -186,33 +194,35 @@ func (m *Manager) press(h uintptr) {
 	}
 	m.set(next)
 
-	verb := "已锁定"
+	prefix := "已锁定"
 	if locked {
-		verb = "已切换到"
+		prefix = "已切换至"
 	}
-	const tail = "在这里再按一次 Alt+/ 可解除。"
 	switch {
 	case n == 1:
-		m.Notify(verb+"当前终端", fmt.Sprintf("消息会在后台发送到「%s」，不会切换窗口。%s",
-			consoleName(winName, c), tail))
+		m.notifyAs(LevelSuccess, prefix+"终端", lockedBody(consoleName(winName, c), lineBackground, lineUnlock))
 	case n > 1:
-		m.Notify(verb+"当前窗口", fmt.Sprintf("「%s」里同时显示了 %d 个终端，分不清是哪一个，发送时会短暂切到该窗口。"+
-			"想后台发送，可在目标终端里运行 clawbot-ilink-relay -lock 。", winName, n))
+		m.notifyAs(LevelSuccess, prefix+"窗口", lockedBody(winName, lineForeground,
+			fmt.Sprintf("检测到 %d 个可见终端，无法确定具体目标", n), "如需后台发送，请在目标终端中以 -lock 参数运行本程序"))
 	default:
-		m.Notify(verb+"当前窗口", fmt.Sprintf("消息只会发送到「%s」，发送时会短暂切换到该窗口。%s", winName, tail))
+		m.notifyAs(LevelSuccess, prefix+"窗口", lockedBody(winName, lineForeground, lineUnlock))
 	}
+}
+
+// lockedBody 组成锁定通知的正文：第一行是目标，之后每项一行。
+func lockedBody(name string, lines ...string) string {
+	return strings.Join(append([]string{"目标：" + name}, lines...), "\n")
 }
 
 // LockConsolePID 锁定 pid 所在的终端会话，供 -lock 命令使用。
 func (m *Manager) LockConsolePID(pid uint32) {
 	c, err := m.consoleOf(pid)
 	if err != nil {
-		m.Notify("没能锁定终端", fmt.Sprintf("这个终端无法后台写入：%v", err))
+		m.notifyAs(LevelError, "终端锁定失败", fmt.Sprintf("无法后台写入此终端：%v", err))
 		return
 	}
 	m.set(target{kind: kindConsole, pid: c.PID, start: c.Start})
-	m.Notify("已锁定这个终端", fmt.Sprintf("消息会在后台发送到「%s」，不会切换窗口。连按两下 Alt+/ 可解除。",
-		consoleName("", c)))
+	m.notifyAs(LevelSuccess, "已锁定终端", lockedBody(consoleName("", c), lineBackground, lineUnlockAny))
 }
 
 // Inject 按当前锁定状态输入文本。锁定的目标已关闭时返回 wintype.ErrTargetClosed。
@@ -233,23 +243,35 @@ func (m *Manager) Inject(text string, opts wintype.Options) error {
 	return m.typeTo(t.hwnd, text, opts)
 }
 
+// Level 是通知的样式，决定提示卡片的颜色和图标。
+type Level int
+
+const (
+	LevelInfo    Level = iota // 蓝色：一般状态，例如解除锁定
+	LevelSuccess              // 绿色：锁定成功
+	LevelWarning              // 橙色：没有锁定、消息没有发送
+	LevelError                // 红色：操作失败
+)
+
 // SetNotifier 设置通知函数，nil 表示不再通知。
-func (m *Manager) SetNotifier(fn func(title, msg string)) {
+func (m *Manager) SetNotifier(fn func(level Level, title, msg string)) {
 	m.mu.Lock()
 	m.notify = fn
 	m.mu.Unlock()
 }
 
-// Notify 在 Windows 通知栏弹出提示；没有可用通知通道时忽略。
-func (m *Manager) Notify(title, msg string) {
+// Notify 弹出一条提醒（橙色）。供投递器在锁定目标已关闭时调用。
+func (m *Manager) Notify(title, msg string) { m.notifyAs(LevelWarning, title, msg) }
+
+// notifyAs 在屏幕右下角弹出提示卡片；没有可用通知通道时忽略。
+func (m *Manager) notifyAs(level Level, title, msg string) {
 	m.mu.Lock()
 	fn := m.notify
 	m.mu.Unlock()
 	if fn != nil {
-		fn(title, msg)
+		fn(level, title, msg)
 	}
 }
-
 func displayName(title string) string {
 	if title == "" {
 		return "无标题窗口"

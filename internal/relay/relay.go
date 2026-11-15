@@ -34,12 +34,12 @@ type Source interface {
 }
 
 // ErrDiscarded 表示消息因为锁定的目标已关闭而被丢弃。
-var ErrDiscarded = errors.New("锁定的窗口或终端已关闭，消息已丢弃")
+var ErrDiscarded = errors.New("锁定的目标已关闭，消息已丢弃")
 
 // 目标关闭时的通知文案。
 const (
-	closedNoticeTitle = "消息没有发送"
-	closedNoticeText  = "锁定的窗口或终端已经关闭。按 Alt+/ 解除锁定，或重新锁定一个窗口。"
+	closedNoticeTitle = "消息未发送"
+	closedNoticeText  = "锁定的目标已关闭，消息已丢弃\n连按两次 Alt+/ 解除锁定"
 )
 
 // Injector 把文本输入到目标，并能在需要时通知用户。

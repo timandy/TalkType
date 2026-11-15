@@ -213,7 +213,7 @@ func consoleOfPID(pid uint32) (consoleMatch, error) {
 		return consoleMatch{}, errors.New(infos[0].Err)
 	}
 	if own := wintype.OwnConsoleWindow(); own != 0 && infos[0].Window == own {
-		return consoleMatch{}, errors.New("这是 clawbot-ilink-relay 自己所在的终端")
+		return consoleMatch{}, errors.New("不能锁定本程序所在的终端")
 	}
 	return toMatch(infos[0]), nil
 }

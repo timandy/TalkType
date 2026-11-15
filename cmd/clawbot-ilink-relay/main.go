@@ -41,15 +41,15 @@ func main() {
 	}
 
 	if runtime.GOOS != "windows" {
-		logger.Fatal("clawbot-ilink-relay 仅支持 Windows")
+		logger.Fatal("本程序仅支持 Windows")
 	}
 	wintype.SetupConsole()
 
 	configPath := flag.String("config", "config.json", "配置文件路径")
 	sourceName := flag.String("source", "wechat", "消息来源：wechat（微信）或 console（调试用，从本窗口逐行输入）")
 	relogin := flag.Bool("relogin", false, "清除本地凭证并强制重新扫码登录（仅 wechat）")
-	lock := flag.Bool("lock", false, "在要接收消息的终端里运行：让正在运行的 clawbot-ilink-relay 锁定这个终端")
-	unlock := flag.Bool("unlock", false, "让正在运行的 clawbot-ilink-relay 解除锁定")
+	lock := flag.Bool("lock", false, "在目标终端中运行：通知正在运行的本程序实例锁定该终端")
+	unlock := flag.Bool("unlock", false, "通知正在运行的本程序实例解除锁定")
 	flag.Parse()
 
 	if *lock || *unlock {
@@ -72,11 +72,11 @@ func main() {
 	var injector relay.Injector = relay.CursorInjector{}
 	toCursor := func() bool { return true }
 	if err := locker.Start(ctx); err != nil {
-		logger.Printf("窗口锁定功能不可用，将始终输入到当前光标: %v", err)
+		logger.Printf("锁定功能不可用，消息将始终输入到当前光标位置：%v", err)
 	} else {
 		injector = locker
 		toCursor = func() bool { return !locker.IsLocked() }
-		logger.Println("Alt+/ 锁定当前窗口或终端（在别处按会切换过去，在锁定的目标里按会解除）；连按两下 Alt+/ 解除锁定")
+		logger.Println("快捷键：Alt+/ 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；连按两次 Alt+/ 解除锁定")
 	}
 
 	var src relay.Source
@@ -133,7 +133,7 @@ func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*ilin
 		}
 	}
 	logger.Printf("凭证文件: %s", tokenPath)
-	logger.Println("提示：未锁定时，收到消息后会直接键入当前光标并回车，请先把目标窗口置于前台并点中输入框")
+	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
 	return ilink.NewClient(cfg, st, logger), nil
 }
 

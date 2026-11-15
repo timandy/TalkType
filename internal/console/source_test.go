@@ -50,7 +50,7 @@ func TestRun_ReportsResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := out.String()
-	for _, want := range []string{"已发送: a", "没有发送", "发送失败: boom"} {
+	for _, want := range []string{"已发送：a", "消息未发送", "发送失败：boom"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log missing %q:\n%s", want, log)
 		}
