@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -21,15 +20,13 @@ const (
 	wmCopyData = 0x004A
 	wmNotify   = 0x8000 + 1 // WM_APP+1：让 UI 线程弹出排队的提示卡片
 
-	modAlt      = 0x0001
-	modNoRepeat = 0x4000
-	vkOem2      = 0xBF // 美式键盘上的 “/ ?” 键
-	hotkeyID    = 1
-	tapTimerID  = 1
-
-	// doubleTapWindow 内第二次按下 Alt+/ 算作连按两下。单击要等这段时间确认不是连按，
-	// 所以单击会有这么长的延迟。
-	doubleTapWindow = 350 * time.Millisecond
+	// 热键：MOD_ALT 不区分左右，左右两个 Alt 键都能触发。
+	modAlt         = 0x0001
+	modNoRepeat    = 0x4000
+	vkOemPeriod    = 0xBE // “. >” 键
+	vkOem2         = 0xBF // 美式键盘上的 “/ ?” 键
+	hotkeyLockID   = 1    // Alt+. ：锁定、切换，在已锁定的目标里按则解除
+	hotkeyUnlockID = 2    // Alt+/ ：任意位置解除锁定
 
 	copyLock   = 1
 	copyUnlock = 2
@@ -92,33 +89,69 @@ type copyDataStruct struct {
 	lpData uintptr
 }
 
-type notice struct {
-	level      Level
-	title, msg string
-}
-
 // host 是承载热键和提示卡片的隐藏窗口，所有 UI 调用都在它所在的线程上完成。
 type host struct {
 	m    *Manager
 	hwnd uintptr
 
 	mu    sync.Mutex
-	queue []notice
+	queue []Notice
 
 	toasts toaster
 
-	// 只在窗口线程上访问。
-	tapPending bool
-	tapWindow  uintptr // 第一次按下时的前台窗口
+	// 热键和 -lock/-unlock 请求交给工作协程处理：识别目标可能要几百毫秒，
+	// 放在 UI 线程上会卡住提示卡片的动画。
+	events chan hostEvent
+}
+
+type hostEventKind int
+
+const (
+	evLockKey hostEventKind = iota // Alt+.
+	evLockPID                      // -lock
+	evUnlock                       // Alt+/ 或 -unlock
+)
+
+type hostEvent struct {
+	kind   hostEventKind
+	window uintptr // 按下时的前台窗口
+	pid    uint32
+}
+
+// post 把事件交给工作协程；队列满时丢弃（正常使用不会出现）。
+func (h *host) post(ev hostEvent) {
+	select {
+	case h.events <- ev:
+	default:
+	}
+}
+
+// work 按顺序处理事件。
+func (h *host) work(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-h.events:
+			switch ev.kind {
+			case evLockKey:
+				h.m.press(ev.window)
+			case evLockPID:
+				h.m.LockConsolePID(ev.pid)
+			case evUnlock:
+				h.m.Unlock()
+			}
+		}
+	}
 }
 
 // 窗口过程是进程级回调，只会有一个 host 实例。
 var active *host
 
 // enqueue 可在任意 goroutine 调用：把通知排队，再让 UI 线程弹出。
-func (h *host) enqueue(level Level, title, msg string) {
+func (h *host) enqueue(n Notice) {
 	h.mu.Lock()
-	h.queue = append(h.queue, notice{level, title, msg})
+	h.queue = append(h.queue, n)
 	h.mu.Unlock()
 	procPostMessageW.Call(h.hwnd, wmNotify, 0, 0)
 }
@@ -129,45 +162,24 @@ func (h *host) drain() {
 	h.queue = nil
 	h.mu.Unlock()
 	for _, n := range q {
-		h.toasts.show(n.level, n.title, n.msg)
+		h.toasts.show(n)
 	}
 }
-
-// onHotkey 区分单击和连按：第一次按下时记住前台窗口并等待 doubleTapWindow，
-// 期间再按一次就是连按（解除锁定），否则按单击处理。
-func (h *host) onHotkey() {
-	if h.tapPending {
-		procKillTimer.Call(h.hwnd, tapTimerID)
-		h.tapPending = false
-		h.m.Unlock()
-		return
-	}
-	h.tapPending = true
-	h.tapWindow = h.m.foreground()
-	procSetTimer.Call(h.hwnd, tapTimerID, uintptr(doubleTapWindow.Milliseconds()), 0)
-}
-
-func (h *host) onTapTimeout() {
-	procKillTimer.Call(h.hwnd, tapTimerID)
-	if !h.tapPending {
-		return
-	}
-	h.tapPending = false
-	h.m.press(h.tapWindow)
-}
-
 func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	h := active
 	switch msg {
 	case wmHotkey:
-		if h != nil && wParam == hotkeyID {
-			h.onHotkey()
+		if h == nil {
+			return 0
+		}
+		switch wParam {
+		case hotkeyLockID:
+			h.post(hostEvent{kind: evLockKey, window: h.m.foreground()})
+		case hotkeyUnlockID:
+			h.post(hostEvent{kind: evUnlock})
 		}
 		return 0
 	case wmTimer:
-		if h != nil && wParam == tapTimerID {
-			h.onTapTimeout()
-		}
 		if h != nil && wParam == toastTimerID {
 			h.toasts.tick()
 		}
@@ -184,9 +196,9 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				return 0
 			}
 			pid := *(*uint32)(unsafe.Add(unsafe.Pointer(nil), cds.lpData))
-			h.m.LockConsolePID(pid)
+			h.post(hostEvent{kind: evLockPID, pid: pid})
 		case copyUnlock:
-			h.m.Unlock()
+			h.post(hostEvent{kind: evUnlock})
 		default:
 			return 0
 		}
@@ -202,7 +214,8 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	case wmDestroy:
 		if h != nil {
 			h.m.SetNotifier(nil)
-			procUnregisterHotKey.Call(hwnd, hotkeyID)
+			procUnregisterHotKey.Call(hwnd, hotkeyLockID)
+			procUnregisterHotKey.Call(hwnd, hotkeyUnlockID)
 			h.toasts.closeAll()
 		}
 		procPostQuitMessage.Call(0)
@@ -212,8 +225,9 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	return r
 }
 
-// Start 注册 Alt+/ 全局热键并准备提示卡片，在 ctx 结束时清理。
-// 热键被其他程序占用时返回错误，此时锁定功能不可用，其余功能不受影响。
+// Start 注册 Alt+. 和 Alt+/ 全局热键并准备提示卡片，在 ctx 结束时清理。
+// Alt+. 被其他程序占用时返回错误，此时锁定功能不可用，其余功能不受影响；
+// 只有 Alt+/ 被占用时照常工作，可在已锁定的目标里按 Alt+. 解除。
 func (m *Manager) Start(ctx context.Context) error {
 	ready := make(chan error, 1)
 	go m.run(ctx, ready)
@@ -250,17 +264,22 @@ func (m *Manager) run(ctx context.Context, ready chan<- error) {
 		return
 	}
 
-	h := &host{m: m, hwnd: hwnd}
+	h := &host{m: m, hwnd: hwnd, events: make(chan hostEvent, 16)}
 	h.toasts.host = hwnd
+	h.toasts.warmUp()
 	active = h
 	defer func() { active = nil }()
 
-	if r, _, err := procRegisterHotKey.Call(hwnd, hotkeyID, modAlt|modNoRepeat, vkOem2); r == 0 {
+	if r, _, err := procRegisterHotKey.Call(hwnd, hotkeyLockID, modAlt|modNoRepeat, vkOemPeriod); r == 0 {
 		procDestroyWindow.Call(hwnd)
-		ready <- fmt.Errorf("注册 Alt+/ 失败（可能已被其他程序占用）: %v", err)
+		ready <- fmt.Errorf("注册 Alt+. 失败（可能已被其他程序占用）: %v", err)
 		return
 	}
+	if r, _, err := procRegisterHotKey.Call(hwnd, hotkeyUnlockID, modAlt|modNoRepeat, vkOem2); r == 0 {
+		logf("注册 Alt+/ 失败（可能已被其他程序占用），请在已锁定的目标中按 Alt+. 解除锁定: %v", err)
+	}
 	m.SetNotifier(h.enqueue)
+	go h.work(ctx)
 	ready <- nil
 
 	done := make(chan struct{})

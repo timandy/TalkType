@@ -39,7 +39,7 @@ var ErrDiscarded = errors.New("锁定的目标已关闭，消息已丢弃")
 // 目标关闭时的通知文案。
 const (
 	closedNoticeTitle = "消息未发送"
-	closedNoticeText  = "锁定的目标已关闭，消息已丢弃\n连按两次 Alt+/ 解除锁定"
+	closedNoticeText  = "锁定的目标已关闭，消息已丢弃\n按 Alt+/ 解除锁定，或在新目标中按 Alt+. 重新锁定"
 )
 
 // Injector 把文本输入到目标，并能在需要时通知用户。

@@ -19,7 +19,7 @@
 - **断线重连**：指数退避 + 抖动；会话过期（`-14`）自动重新登录
 - **Unicode 键入**：中文、Emoji 直接输入，无需剪贴板和输入法
 - **发送者白名单**：只处理指定微信用户的消息
-- **锁定窗口或终端**：Alt+/ 锁定目标；终端（PowerShell、Windows Terminal、JetBrains / VS Code 终端）在后台直接写入，不切换窗口
+- **锁定窗口或终端**：Alt+. 锁定目标，Alt+/ 解除；终端（PowerShell、Windows Terminal、JetBrains / VS Code 终端）在后台直接写入，不切换窗口
 - **消息来源可替换**：微信，或调试用的控制台输入
 
 ## 工作流程
@@ -200,25 +200,25 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 `INPUT` 结构按 64 位（40 字节）/ 32 位（28 字节）分别构造。键击作用于**当前前台窗口**，
 因此未锁定时需把目标窗口置前并点中输入框；锁定后的发送方式见 [docs/window-lock.md](docs/window-lock.md)。
 
-## 锁定窗口或终端（Alt+/）
+## 锁定窗口或终端（Alt+. / Alt+/）
 
 快捷键：
 
 | 操作 | 效果 |
 |---|---|
-| 未锁定时按 Alt+/ | 锁定当前窗口或终端 |
-| 已锁定，在**别的**窗口或终端标签里按 Alt+/ | 锁定切换到当前这个 |
-| 已锁定，在**锁定的那个**里按 Alt+/ | 解除锁定 |
-| 快速连按两下 Alt+/ | 无论在哪里，直接解除锁定 |
+| 未锁定时按 Alt+. | 锁定当前窗口或终端 |
+| 已锁定，在**别的**窗口或终端标签里按 Alt+. | 锁定切换到当前这个 |
+| 已锁定，在**锁定的那个**里按 Alt+. | 解除锁定 |
+| 在任意位置按 Alt+/ | 直接解除锁定 |
 
-单击 Alt+/ 会等约 0.35 秒确认不是连按，然后才生效。
+左右两个 Alt 键都可以。按下到提示卡片出现，实测 30～240 毫秒。
 
 锁定后的发送方式：
 
 - **终端**（PowerShell、cmd、Windows Terminal、IntelliJ IDEA / GoLand 等 JetBrains 终端、VS Code 终端）：
   在后台直接写入该终端，**不切换窗口、不闪烁、不打断你正在别处打字**。
   - Windows Terminal 有多个标签时，按窗口标题确认当前标签。
-  - JetBrains / VS Code 的终端：按下 Alt+/ 后，程序把窗口临时缩小 24 像素再恢复（约 0.2 秒，窗口边缘会轻微闪一下）。
+  - JetBrains / VS Code 的终端：按下 Alt+. 后，程序把窗口临时缩小 24 像素再恢复（约 0.2 秒，窗口边缘会轻微闪一下）。
     IDE 只会调整正在显示的终端的尺寸，由此确定锁定哪个标签。Reworked 2025 和 Classic 引擎、Window / Float / 停靠等显示模式都适用。
     通知里会显示锁定标签的提示符，方便确认。
   - 也可以在目标终端里运行 `clawbot-ilink-relay.exe -lock` 精确锁定它；`-unlock` 解除。
@@ -226,7 +226,7 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
   凡是探测不到正在显示的终端，都按这种方式处理。
 - 锁定的窗口或终端关闭后，消息不再发送（该消息被丢弃），并弹出提示。
 - 每次状态变化都会在屏幕右下角弹出彩色提示卡片：新卡片把旧的往上顶，越旧越透明，几秒后淡出消失；不抢焦点，也不挡鼠标。
-- 如果 Alt+/ 已被其他程序占用，启动时会打印警告，锁定功能不可用。
+- 如果 Alt+. 已被其他程序占用，启动时会打印警告，锁定功能不可用；只有 Alt+/ 被占用时，可在已锁定的目标里按 Alt+. 解除。
 - 以管理员身份运行的终端无法后台写入，除非本程序也以管理员身份运行。
 
 原理、支持的窗口类别和已知限制详见 [docs/window-lock.md](docs/window-lock.md)。
@@ -242,7 +242,7 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 clawbot-ilink-relay.exe -source console
 ```
 
-每输入一行并回车，就当作收到一条消息。先切到目标终端按 Alt+/ 锁定，再回到本窗口输入即可。
+每输入一行并回车，就当作收到一条消息。先切到目标终端按 Alt+. 锁定，再回到本窗口输入即可。
 未锁定时，回车后有 3 秒时间切到目标窗口。
 
 ## 常见问题
@@ -254,7 +254,7 @@ clawbot-ilink-relay.exe -source console
 | 中文变成乱码或丢失 | 目标控件需支持 `WM_CHAR` / Unicode 输入；部分游戏、远程桌面或安全控件会拦截合成键击 |
 | 偶尔重复输入 | 服务端未返回 `message_id` 时无法去重，属于预期情况 |
 | 频繁出现重新扫码 | 微信侧主动失效或重复绑定顶号，重新扫码即可 |
-| 输入到了别的窗口 | 未锁定时键入跟随当前前台焦点；按 Alt+/ 锁定目标窗口或终端，见下文和 [docs/window-lock.md](docs/window-lock.md) |
+| 输入到了别的窗口 | 未锁定时键入跟随当前前台焦点；按 Alt+. 锁定目标窗口或终端，见上文和 [docs/window-lock.md](docs/window-lock.md) |
 
 日志直接输出到控制台，前缀为 `[clawbot]`，可据此判断登录、收消息、ACK 与重连状态。
 
@@ -287,12 +287,12 @@ clawbot-ilink-relay/
 │   │   └── util.go          随机数、退避、休眠、打开链接
 │   ├── console/
 │   │   └── source.go        控制台消息来源（调试用）
-│   ├── winlock/              Alt+/ 锁定：状态与语义、目标识别、热键、提示卡片
+│   ├── winlock/              快捷键锁定：状态与语义、目标识别、热键、提示卡片
 │   └── wintype/
 │       ├── options.go       输入参数
 │       ├── input_windows.go SendInput Unicode 键入（//go:build windows）
 │       ├── window_windows.go 切前台输入、窗口信息
-│       ├── console_windows.go 后台写入终端、辅助子进程
+│       ├── console_windows.go 后台写入终端、常驻辅助进程
 │       ├── process_windows.go 进程快照、控制台宿主、读操作计数
 │       └── *_other.go       非 Windows 占位实现
 ├── docs/

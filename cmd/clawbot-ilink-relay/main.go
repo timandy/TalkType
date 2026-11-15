@@ -1,5 +1,5 @@
 // clawbot-ilink-relay 把收到的文本消息输入到当前光标处并回车（不占用剪贴板），
-// 或输入到用 Alt+/ 锁定的窗口或终端（终端在后台直接写入，不切换窗口）。
+// 或输入到用 Alt+. 锁定的窗口或终端（终端在后台直接写入，不切换窗口）。
 //
 // 消息来源可替换：
 //   - wechat（默认）：通过官方 iLink Bot API 扫码登录、长轮询接收微信消息，替代 OpenClaw 的微信渠道；
@@ -76,7 +76,7 @@ func main() {
 	} else {
 		injector = locker
 		toCursor = func() bool { return !locker.IsLocked() }
-		logger.Println("快捷键：Alt+/ 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；连按两次 Alt+/ 解除锁定")
+		logger.Println("快捷键：Alt+. 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；Alt+/ 在任意位置解除锁定")
 	}
 
 	var src relay.Source

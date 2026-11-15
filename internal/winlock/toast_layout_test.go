@@ -10,21 +10,21 @@ func TestToastOpacityLifecycle(t *testing.T) {
 	born := time.Unix(1000, 0)
 	fadeOutAt := born.Add(toastFadeIn + toastStay)
 
-	if op, done := toastOpacity(born, born, fadeOutAt); op != 0 || done {
+	if op, done := toastOpacity(born, born, fadeOutAt, toastFadeOut); op != 0 || done {
 		t.Errorf("at birth: op=%v done=%v", op, done)
 	}
-	mid, _ := toastOpacity(born.Add(toastFadeIn/2), born, fadeOutAt)
+	mid, _ := toastOpacity(born.Add(toastFadeIn/2), born, fadeOutAt, toastFadeOut)
 	if mid <= 0 || mid >= 1 {
 		t.Errorf("fading in: op=%v", mid)
 	}
-	if op, done := toastOpacity(born.Add(toastFadeIn+time.Second), born, fadeOutAt); op != 1 || done {
+	if op, done := toastOpacity(born.Add(toastFadeIn+time.Second), born, fadeOutAt, toastFadeOut); op != 1 || done {
 		t.Errorf("staying: op=%v done=%v", op, done)
 	}
-	out, done := toastOpacity(fadeOutAt.Add(toastFadeOut/2), born, fadeOutAt)
+	out, done := toastOpacity(fadeOutAt.Add(toastFadeOut/2), born, fadeOutAt, toastFadeOut)
 	if out <= 0 || out >= 1 || done {
 		t.Errorf("fading out: op=%v done=%v", out, done)
 	}
-	if op, done := toastOpacity(fadeOutAt.Add(toastFadeOut), born, fadeOutAt); op != 0 || !done {
+	if op, done := toastOpacity(fadeOutAt.Add(toastFadeOut), born, fadeOutAt, toastFadeOut); op != 0 || !done {
 		t.Errorf("after fade out: op=%v done=%v", op, done)
 	}
 }
@@ -33,7 +33,7 @@ func TestToastOpacityForcedEarlyFade(t *testing.T) {
 	born := time.Unix(1000, 0)
 	now := born.Add(time.Second)
 	// 被顶出可见范围时，fadeOutAt 提前到 now
-	if op, done := toastOpacity(now.Add(toastFadeOut), born, now); op != 0 || !done {
+	if op, done := toastOpacity(now.Add(toastFadeOut), born, now, toastFadeOut); op != 0 || !done {
 		t.Errorf("op=%v done=%v", op, done)
 	}
 }
@@ -95,5 +95,12 @@ func TestRoundedRectSDF(t *testing.T) {
 	}
 	if d := roundedRectSDF(-5, 25, 0, 0, 100, 50, 10); math.Abs(d-5) > 1e-9 {
 		t.Errorf("5px left of the edge: %v", d)
+	}
+}
+
+func TestToastOpacityZeroFade(t *testing.T) {
+	born := time.Unix(1000, 0)
+	if _, done := toastOpacity(born, born, born, 0); !done {
+		t.Error("zero fade duration should finish immediately")
 	}
 }

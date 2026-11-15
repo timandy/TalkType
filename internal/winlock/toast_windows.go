@@ -337,16 +337,21 @@ type toast struct {
 	img       *toastImage
 	born      time.Time
 	fadeOutAt time.Time
-	x, y      float64 // 当前窗口位置
+	fadeDur   time.Duration // 淡出用时
+	x, y      float64       // 当前窗口位置
 	shown     bool
+
+	// 上一次提交给系统的位置和透明度，没变化时跳过 UpdateLayeredWindow。
+	lastX, lastY int32
+	lastAlpha    byte
 }
 
 // toaster 管理所有卡片，只在 UI 线程上使用。
 type toaster struct {
-	host    uintptr // 驱动动画定时器的窗口
-	toasts  []*toast
-	timerOn bool
-	last    time.Time
+	host     uintptr // 驱动动画定时器的窗口
+	toasts   []*toast
+	interval time.Duration // 当前定时器间隔，0 表示定时器未开启
+	last     time.Time
 
 	// 卡片堆叠的锚点：工作区右下角与 DPI，在第一张卡片出现时确定。
 	right, bottom float64
@@ -384,12 +389,34 @@ func (t *toaster) anchor() {
 
 func (t *toaster) scale(v float64) float64 { return v * float64(t.dpi) / 96 }
 
+// warmUp 在启动时按当前显示器 DPI 渲染一张卡片并丢弃。第一次渲染要加载字体等资源，
+// 实测比之后慢约 30 毫秒，提前做掉，第一次按快捷键时就不用等。
+func (t *toaster) warmUp() {
+	t.anchor()
+	if img, ok := renderToast(LevelInfo, "预热", "预热", t.dpi); ok {
+		img.release()
+	}
+}
+
+// setInterval 调整动画定时器的间隔；d 为 0 时关闭。
+func (t *toaster) setInterval(d time.Duration) {
+	if d == t.interval {
+		return
+	}
+	if d == 0 {
+		procKillTimer.Call(t.host, toastTimerID)
+	} else {
+		procSetTimer.Call(t.host, toastTimerID, uintptr(d.Milliseconds()), 0)
+	}
+	t.interval = d
+}
+
 // show 弹出一张新卡片，放在最下面，把已有卡片往上顶。
-func (t *toaster) show(level Level, title, msg string) {
+func (t *toaster) show(n Notice) {
 	if len(t.toasts) == 0 {
 		t.anchor()
 	}
-	img, ok := renderToast(level, title, msg, t.dpi)
+	img, ok := renderToast(n.Level, n.Title, n.Msg, t.dpi)
 	if !ok {
 		return
 	}
@@ -402,17 +429,14 @@ func (t *toaster) show(level Level, title, msg string) {
 		return
 	}
 	now := time.Now()
-	nt := &toast{hwnd: hwnd, img: img, born: now, fadeOutAt: now.Add(toastFadeIn + toastStay)}
+	nt := &toast{hwnd: hwnd, img: img, born: now, fadeOutAt: now.Add(toastFadeIn + toastStay), fadeDur: toastFadeOut}
 	nt.y = t.bottom - float64(img.cardH) - float64(img.margin)
 	t.toasts = append([]*toast{nt}, t.toasts...)
 	t.tick()
-	if !t.timerOn {
-		procSetTimer.Call(t.host, toastTimerID, uintptr(toastFrame.Milliseconds()), 0)
-		t.timerOn = true
-	}
 }
 
 // tick 推进一帧动画：更新每张卡片的位置和透明度，销毁已经消失的卡片。
+// 所有卡片都静止时，把定时器放慢到下一张卡片开始淡出的时刻，避免空转。
 func (t *toaster) tick() {
 	now := time.Now()
 	dt := now.Sub(t.last)
@@ -427,12 +451,14 @@ func (t *toaster) tick() {
 	}
 	targets := stackTargets(t.bottom, heights, t.scale(10))
 
+	moving := false
+	nextFade := time.Duration(math.MaxInt64)
 	alive := t.toasts[:0]
 	for i, ts := range t.toasts {
 		if i >= toastMaxVisible && ts.fadeOutAt.After(now) {
 			ts.fadeOutAt = now // 被顶出可见范围：提前淡出
 		}
-		op, done := toastOpacity(now, ts.born, ts.fadeOutAt)
+		op, done := toastOpacity(now, ts.born, ts.fadeOutAt, ts.fadeDur)
 		if done {
 			ts.destroy()
 			continue
@@ -440,25 +466,46 @@ func (t *toaster) tick() {
 		op *= math.Max(stackOpacity(i), stackOpacity(toastMaxVisible-1))
 
 		m := float64(ts.img.margin)
-		ts.y = approach(ts.y, targets[i]-m, dt)
-		ts.x = t.right - float64(ts.img.cardW) - m + slideOffset(now, ts.born)*t.scale(toastSlideDist)
+		ty := targets[i] - m
+		ts.y = approach(ts.y, ty, dt)
+		slide := slideOffset(now, ts.born)
+		ts.x = t.right - float64(ts.img.cardW) - m + slide*t.scale(toastSlideDist)
 		ts.update(byte(math.Round(op * 255)))
 		alive = append(alive, ts)
+
+		switch {
+		case !now.Before(ts.fadeOutAt), slide > 0, ts.y != ty, now.Sub(ts.born) < toastFadeIn:
+			moving = true
+		default:
+			if d := ts.fadeOutAt.Sub(now); d < nextFade {
+				nextFade = d
+			}
+		}
 	}
 	for i := len(alive); i < len(t.toasts); i++ {
 		t.toasts[i] = nil
 	}
 	t.toasts = alive
 
-	if len(t.toasts) == 0 && t.timerOn {
-		procKillTimer.Call(t.host, toastTimerID)
-		t.timerOn = false
+	switch {
+	case len(t.toasts) == 0:
+		t.setInterval(0)
 		t.last = time.Time{}
+	case moving:
+		t.setInterval(toastFrame)
+	default:
+		t.setInterval(max(nextFade, toastFrame))
+		t.last = time.Time{} // 静止期间不需要平滑追随
 	}
 }
 
 func (ts *toast) update(alpha byte) {
-	pt := struct{ x, y int32 }{int32(math.Round(ts.x)), int32(math.Round(ts.y))}
+	x, y := int32(math.Round(ts.x)), int32(math.Round(ts.y))
+	if ts.shown && x == ts.lastX && y == ts.lastY && alpha == ts.lastAlpha {
+		return
+	}
+	ts.lastX, ts.lastY, ts.lastAlpha = x, y, alpha
+	pt := struct{ x, y int32 }{x, y}
 	size := sizeStruct{ts.img.w, ts.img.h}
 	src := struct{ x, y int32 }{}
 	blend := blendFunction{op: 0, alpha: alpha, format: acSrcAlpha}
@@ -480,10 +527,7 @@ func (t *toaster) closeAll() {
 		ts.destroy()
 	}
 	t.toasts = nil
-	if t.timerOn {
-		procKillTimer.Call(t.host, toastTimerID)
-		t.timerOn = false
-	}
+	t.setInterval(0)
 }
 
 // 文字超采样倍数：按 textSS 倍尺寸绘制，再缩小到原尺寸，相当于 textSS² 倍抗锯齿。

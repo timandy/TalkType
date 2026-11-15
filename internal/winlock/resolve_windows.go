@@ -23,10 +23,18 @@ var shellExes = map[string]bool{
 
 const maxAncestorDepth = 32
 
+// 自身就是终端的窗口类名：传统控制台和 Windows Terminal。
+var terminalClasses = map[string]bool{
+	"ConsoleWindowClass":            true,
+	"CASCADIA_HOSTING_WINDOW_CLASS": true,
+}
+
 const (
 	// 缩小的像素数要大于一个字符宽，保证终端列数一定会变。
 	resizeProbePixels  = 24
-	resizeProbeTimeout = 300 * time.Millisecond // 实测正在显示的终端几十毫秒内就有反应
+	resizeProbeTimeout = 200 * time.Millisecond // 实测正在显示的终端约 60 毫秒后有反应，留 3 倍余量
+	resizeProbePoll    = 10 * time.Millisecond
+	resizeProbeSettle  = 30 * time.Millisecond // 发现第一个反应后再等一会儿，看有没有同时显示的其他终端
 )
 
 // resolveConsole 找出窗口 hwnd 里承载的终端会话：
@@ -46,10 +54,19 @@ func resolveConsole(hwnd uintptr, winPID uint32) (consoleMatch, int) {
 	}
 	own := uint32(os.Getpid())
 	parent := make(map[uint32]uint32, len(procs))
-	var shells []uint32
 	for _, p := range procs {
 		parent[p.PID] = p.PPID
-		if p.PID != own && shellExes[strings.ToLower(p.Exe)] {
+	}
+	// 终端窗口（传统控制台、Windows Terminal）里的 shell 不一定是窗口进程的子孙，
+	// 要查询全部 shell；其他窗口只需查询它自己的子孙 shell，没有就直接按普通窗口处理，
+	// 省去启动查询的开销（例如浏览器）。
+	terminalWindow := terminalClasses[wintype.WindowClass(hwnd)]
+	var shells []uint32
+	for _, p := range procs {
+		if p.PID == own || !shellExes[strings.ToLower(p.Exe)] {
+			continue
+		}
+		if terminalWindow || isDescendant(p.PID, winPID, parent) {
 			shells = append(shells, p.PID)
 		}
 	}
@@ -172,11 +189,13 @@ func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) []wintype.ConsoleI
 		return nil
 	}
 	var changed []int
-	deadline := time.Now().Add(resizeProbeTimeout)
+	shrunk := time.Now()
+	deadline := shrunk.Add(resizeProbeTimeout)
 	for time.Now().Before(deadline) {
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(resizeProbePoll)
 		if changed = changedNow(nil); len(changed) > 0 {
-			time.Sleep(60 * time.Millisecond) // 给同时显示的其他终端一点时间，避免误判唯一
+			logf("尺寸探测：终端在 %v 后有反应", time.Since(shrunk).Round(time.Millisecond))
+			time.Sleep(resizeProbeSettle)
 			changed = append(changed, changedNow(changed)...)
 			break
 		}

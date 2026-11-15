@@ -36,13 +36,16 @@ func easeOutCubic(t float64) float64 {
 }
 
 // toastOpacity 返回卡片在 now 时刻自身的不透明度（不含堆叠系数）：
-// 出现时淡入，到 fadeOutAt 后淡出。done 表示已经完全消失，可以销毁。
-func toastOpacity(now, born, fadeOutAt time.Time) (opacity float64, done bool) {
+// 出现时淡入，到 fadeOutAt 后在 fade 时间内淡出。done 表示已经完全消失，可以销毁。
+func toastOpacity(now, born, fadeOutAt time.Time, fade time.Duration) (opacity float64, done bool) {
 	in := easeOutCubic(float64(now.Sub(born)) / float64(toastFadeIn))
 	if now.Before(fadeOutAt) {
 		return in, false
 	}
-	out := 1 - float64(now.Sub(fadeOutAt))/float64(toastFadeOut)
+	if fade <= 0 {
+		return 0, true
+	}
+	out := 1 - float64(now.Sub(fadeOutAt))/float64(fade)
 	if out <= 0 {
 		return 0, true
 	}

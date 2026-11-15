@@ -7,12 +7,12 @@ package wintype
 // （Windows Terminal、JetBrains/VS Code 终端）都有效。
 //
 // 一个进程同一时间只能挂在一个控制台上，而本程序自己有控制台用于打印日志，
-// 所以实际的挂接和写入由一个短命的辅助子进程完成：同一个 exe，以 HelperArg
-// 作为第一个参数启动，通过 stdin/stdout 交换 JSON。
+// 所以实际的挂接和写入由一个常驻的辅助子进程完成：同一个 exe，以 HelperArg serve
+// 启动，通过 stdin/stdout 逐行交换 JSON。辅助进程在第一次使用时启动，之后复用，
+// 省去每次启动进程的开销（实测约 45 毫秒）；本程序退出时 stdin 关闭，它随之退出。
 
 import (
-	"bytes"
-	"context"
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -33,7 +34,6 @@ const (
 	detachedProcess   = 0x00000008
 	createNoWindow    = 0x08000000
 	errInvalidParam   = 87
-	helperExitGone    = 3
 	helperTimeout     = 15 * time.Second
 	keyEventType      = 1
 	scanReturn        = 0x1C
@@ -52,6 +52,7 @@ var (
 	procSetConsoleTitleW   = kernel32DLL.NewProc("SetConsoleTitleW")
 	procGetConsoleSBInfo   = kernel32DLL.NewProc("GetConsoleScreenBufferInfo")
 	procReadConsoleOutChar = kernel32DLL.NewProc("ReadConsoleOutputCharacterW")
+	procSetConsoleCtrlHdlr = kernel32DLL.NewProc("SetConsoleCtrlHandler")
 )
 
 var errConsoleGone = errors.New("目标进程已退出")
@@ -82,39 +83,139 @@ type activeTabRequest struct {
 // 父进程侧
 // ---------------------------------------------------------------------------
 
-func runHelper(cmd string, in, out any) error {
+type helperRequest struct {
+	Cmd  string          `json:"cmd"`
+	Data json.RawMessage `json:"data"`
+}
+
+type helperResponse struct {
+	Gone   bool            `json:"gone,omitempty"` // 目标进程已退出
+	Err    string          `json:"err,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+// helperClient 管理常驻的辅助进程。请求串行处理。
+type helperClient struct {
+	mu  sync.Mutex
+	cmd *exec.Cmd
+	in  io.WriteCloser
+	out *bufio.Reader
+}
+
+var helper helperClient
+
+// errNotSent 表示请求还没送到辅助进程（进程没启动或已经退出），可以安全地重启后重发。
+type errNotSent struct{ err error }
+
+func (e errNotSent) Error() string { return e.err.Error() }
+
+func (c *helperClient) start() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(in)
+	cmd := exec.Command(exe, HelperArg, "serve")
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess | createNoWindow, HideWindow: true}
+	in, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), helperTimeout)
-	defer cancel()
-
-	c := exec.CommandContext(ctx, exe, HelperArg, cmd)
-	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess | createNoWindow, HideWindow: true}
-	c.Stdin = bytes.NewReader(payload)
-	var stdout, stderr bytes.Buffer
-	c.Stdout, c.Stderr = &stdout, &stderr
-	err = c.Run()
+	out, err := cmd.StdoutPipe()
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && ee.ExitCode() == helperExitGone {
-			return ErrTargetClosed
-		}
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("%s", msg)
-		}
 		return err
 	}
-	if out != nil {
-		return json.Unmarshal(stdout.Bytes(), out)
+	if err := cmd.Start(); err != nil {
+		return err
 	}
+	c.cmd, c.in, c.out = cmd, in, bufio.NewReaderSize(out, 64<<10)
 	return nil
 }
+
+func (c *helperClient) stop() {
+	if c.cmd == nil {
+		return
+	}
+	_ = c.in.Close()
+	_ = c.cmd.Process.Kill()
+	_ = c.cmd.Wait()
+	c.cmd, c.in, c.out = nil, nil, nil
+}
+
+// roundTrip 发送一个请求并等待响应，超时后返回错误（调用方负责结束辅助进程）。
+func (c *helperClient) roundTrip(req []byte) (helperResponse, error) {
+	in, out := c.in, c.out
+	type result struct {
+		resp helperResponse
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		if _, err := in.Write(req); err != nil {
+			ch <- result{err: errNotSent{err}}
+			return
+		}
+		line, err := out.ReadBytes('\n')
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		var r helperResponse
+		ch <- result{r, json.Unmarshal(line, &r)}
+	}()
+	select {
+	case r := <-ch:
+		return r.resp, r.err
+	case <-time.After(helperTimeout):
+		return helperResponse{}, errors.New("辅助进程无响应")
+	}
+}
+
+// call 把请求交给常驻辅助进程。辅助进程不存在或已退出时自动重启；
+// 请求已经送达但辅助进程中途出错时不重发，避免重复输入。
+func (c *helperClient) call(cmd string, in, out any) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := json.Marshal(helperRequest{Cmd: cmd, Data: data})
+	if err != nil {
+		return err
+	}
+	req = append(req, '\n')
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if c.cmd == nil {
+			if err := c.start(); err != nil {
+				return fmt.Errorf("启动辅助进程失败: %w", err)
+			}
+		}
+		resp, err := c.roundTrip(req)
+		if err != nil {
+			c.stop()
+			lastErr = err
+			var ns errNotSent
+			if errors.As(err, &ns) {
+				continue
+			}
+			return err
+		}
+		switch {
+		case resp.Gone:
+			return ErrTargetClosed
+		case resp.Err != "":
+			return errors.New(resp.Err)
+		case out != nil && len(resp.Result) > 0:
+			return json.Unmarshal(resp.Result, out)
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func runHelper(cmd string, in, out any) error { return helper.call(cmd, in, out) }
 
 // OwnConsoleWindow 返回本进程所在控制台的窗口句柄，没有控制台时为 0。
 func OwnConsoleWindow() uintptr {
@@ -131,9 +232,9 @@ func ProbeConsoles(pids []uint32) ([]ConsoleInfo, error) {
 	return out, nil
 }
 
-// FindActiveTab 用于一个终端窗口里有多个控制台（多个标签页）的情况：依次把每个
-// 控制台的标题临时改成随机标记，看窗口标题是否跟着变，变了的就是当前选中的标签。
-// 标题会立即恢复。返回匹配到的 PID。
+// FindActiveTab 用于一个终端窗口里有多个控制台（多个标签页）的情况：同时把每个
+// 控制台的标题临时改成不同的随机标记，看窗口标题变成了哪一个，就是当前选中的标签。
+// 标题随后恢复。返回匹配到的 PID。
 func FindActiveTab(window uintptr, pids []uint32) ([]uint32, error) {
 	var out []uint32
 	if err := runHelper("activetab", activeTabRequest{Window: window, PIDs: pids}, &out); err != nil {
@@ -173,49 +274,69 @@ func TypeToConsoleWithRetry(pid uint32, text string, opts Options) error {
 
 // RunConsoleHelper 是辅助子进程的入口，返回进程退出码。
 func RunConsoleHelper(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "缺少子命令")
+	if len(args) == 0 || args[0] != "serve" {
+		fmt.Fprintln(os.Stderr, "用法：--clawbot-console-helper serve")
 		return 2
 	}
-	in, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	// 挂接期间目标控制台里按 Ctrl+C、Ctrl+Break 或关闭窗口，都会通知到本进程，
+	// 默认处理会让进程退出。这里全部吞掉，进程照常服务。
+	procSetConsoleCtrlHdlr.Call(syscall.NewCallback(func(uintptr) uintptr { return 1 }), 1)
+
+	r := bufio.NewReaderSize(os.Stdin, 64<<10)
+	w := bufio.NewWriter(os.Stdout)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			b, _ := json.Marshal(handleHelperRequest(line))
+			_, _ = w.Write(append(b, '\n'))
+			if w.Flush() != nil {
+				return 0
+			}
+		}
+		if err != nil { // 本程序已退出
+			return 0
+		}
+	}
+}
+
+func handleHelperRequest(line []byte) (resp helperResponse) {
+	var req helperRequest
+	if err := json.Unmarshal(line, &req); err != nil {
+		return helperResponse{Err: "请求格式错误: " + err.Error()}
 	}
 	var result any
-	switch args[0] {
+	var err error
+	switch req.Cmd {
 	case "write":
-		var req writeRequest
-		if err = json.Unmarshal(in, &req); err == nil {
-			err = helperWrite(req)
+		var in writeRequest
+		if err = json.Unmarshal(req.Data, &in); err == nil {
+			err = helperWrite(in)
 		}
 	case "probe":
 		var pids []uint32
-		if err = json.Unmarshal(in, &pids); err == nil {
+		if err = json.Unmarshal(req.Data, &pids); err == nil {
 			result = helperProbe(pids)
 		}
 	case "activetab":
-		var req activeTabRequest
-		if err = json.Unmarshal(in, &req); err == nil {
-			result = helperActiveTab(req)
+		var in activeTabRequest
+		if err = json.Unmarshal(req.Data, &in); err == nil {
+			result = helperActiveTab(in)
 		}
 	default:
-		err = fmt.Errorf("未知子命令 %q", args[0])
+		err = fmt.Errorf("未知命令 %q", req.Cmd)
 	}
-	if errors.Is(err, errConsoleGone) {
-		fmt.Fprintln(os.Stderr, err)
-		return helperExitGone
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	switch {
+	case errors.Is(err, errConsoleGone):
+		return helperResponse{Gone: true}
+	case err != nil:
+		return helperResponse{Err: err.Error()}
 	}
 	if result != nil {
-		_ = json.NewEncoder(os.Stdout).Encode(result)
+		b, _ := json.Marshal(result)
+		resp.Result = b
 	}
-	return 0
+	return resp
 }
-
 func attachTo(pid uint32) error {
 	procFreeConsole.Call()
 	r, _, e := procAttachConsole.Call(uintptr(pid))
@@ -295,27 +416,41 @@ func helperProbe(pids []uint32) []ConsoleInfo {
 }
 
 func helperActiveTab(req activeTabRequest) []uint32 {
-	matched := []uint32{}
-	for _, pid := range req.PIDs {
+	type probe struct {
+		pid        uint32
+		old, token string
+	}
+	// 1. 同时给所有候选控制台设置不同的临时标题。
+	seed := time.Now().UnixNano() % 1000000
+	var probes []probe
+	for i, pid := range req.PIDs {
 		if attachTo(pid) != nil {
 			continue
 		}
-		old := consoleTitle()
-		token := "clawbot-probe-" + fmt.Sprint(pid, time.Now().UnixNano()%100000)
-		setConsoleTitle(token)
-		hit := false
-		deadline := time.Now().Add(titleProbeTimeout)
-		for time.Now().Before(deadline) {
-			if strings.Contains(WindowTitle(req.Window), token) {
-				hit = true
-				break
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-		setConsoleTitle(old)
+		p := probe{pid: pid, old: consoleTitle(), token: fmt.Sprintf("#%06d-%d#", seed, i)}
+		setConsoleTitle(p.token)
 		detach()
-		if hit {
-			matched = append(matched, pid)
+		probes = append(probes, p)
+	}
+	// 2. 等窗口标题变成其中一个标记。
+	matched := []uint32{}
+	deadline := time.Now().Add(titleProbeTimeout)
+	for len(probes) > 0 && len(matched) == 0 && time.Now().Before(deadline) {
+		title := WindowTitle(req.Window)
+		for _, p := range probes {
+			if strings.Contains(title, p.token) {
+				matched = append(matched, p.pid)
+			}
+		}
+		if len(matched) == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// 3. 恢复原标题。
+	for _, p := range probes {
+		if attachTo(p.pid) == nil {
+			setConsoleTitle(p.old)
+			detach()
 		}
 	}
 	return matched

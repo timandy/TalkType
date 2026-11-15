@@ -63,9 +63,9 @@ func newFixture() *fixture {
 			return f.typeErr
 		},
 	}
-	f.m.SetNotifier(func(level Level, title, msg string) {
-		f.notes = append(f.notes, [2]string{title, msg})
-		f.levels = append(f.levels, level)
+	f.m.SetNotifier(func(n Notice) {
+		f.notes = append(f.notes, [2]string{n.Title, n.Msg})
+		f.levels = append(f.levels, n.Level)
 	})
 	return f
 }
@@ -168,15 +168,25 @@ func TestToggle_SameWindowWhenTabUnknownUnlocks(t *testing.T) {
 	}
 }
 
-func TestUnlock_DoubleTapFromAnyWindow(t *testing.T) {
+func TestUnlockFromAnyWindow(t *testing.T) {
 	f := newFixture()
 	f.addWindow(1, "Chrome")
 	f.fg = 1
 	f.m.Toggle()
-	f.fg = 2 // 在别的窗口连按两下
+	f.fg = 2 // 在别的窗口按 Alt+/
 	f.m.Unlock()
 	if f.m.IsLocked() || f.lastNote()[0] != "已解除锁定" {
 		t.Errorf("locked=%v note=%v", f.m.IsLocked(), f.lastNote())
+	}
+}
+
+func TestLockNoticesShowUnlockShortcut(t *testing.T) {
+	f := newFixture()
+	f.addWindow(1, "Chrome")
+	f.fg = 1
+	f.m.Toggle()
+	if n := f.lastNote(); !strings.Contains(n[1], "Alt+/ 解除锁定") {
+		t.Errorf("note = %v", n)
 	}
 }
 func TestToggle_LockTerminalInBackground(t *testing.T) {

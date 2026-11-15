@@ -1,4 +1,4 @@
-// Package winlock 提供“用 Alt+/ 锁定目标”的功能：
+// Package winlock 提供“用快捷键锁定目标”的功能：
 //   - 未锁定时文本输入到当前光标处；
 //   - 锁定终端（PowerShell、cmd、Windows Terminal、JetBrains/VS Code 终端）时，
 //     在后台直接写入它的控制台，不切换窗口；
@@ -6,9 +6,11 @@
 //   - 锁定的目标关闭后不再发送。
 //
 // 快捷键：
-//   - Alt+/ ：未锁定时锁定当前目标；已锁定时，当前目标就是锁定的那个则解除，
+//   - Alt+. ：未锁定时锁定当前目标；已锁定时，当前目标就是锁定的那个则解除，
 //     否则把锁定切换到当前目标；
-//   - 快速连按两下 Alt+/ ：无论在哪里，直接解除锁定。
+//   - Alt+/ ：无论在哪里，直接解除锁定。
+//
+// 左右两个 Alt 键都可以。
 //
 // 状态变化在屏幕右下角弹出提示卡片。
 package winlock
@@ -59,7 +61,7 @@ type target struct {
 	start uint64
 }
 
-// same 判断按下 Alt+/ 时解析出的目标 next 是否就是当前锁定的 t。
+// same 判断按下 Alt+. 时解析出的目标 next 是否就是当前锁定的 t。
 func (t target) same(next target) bool {
 	switch {
 	case t.kind == kindConsole && next.kind == kindConsole:
@@ -86,7 +88,7 @@ type Manager struct {
 	mu     sync.Mutex
 	locked bool
 	tgt    target
-	notify func(level Level, title, msg string)
+	notify func(Notice)
 
 	// 以下为可替换的系统调用，便于测试。
 	ownPID      uint32
@@ -140,7 +142,7 @@ func (m *Manager) set(t target) {
 	m.mu.Unlock()
 }
 
-// Unlock 解除锁定，恢复为输入到当前光标。连按两下 Alt+/ 和 -unlock 都走这里。
+// Unlock 解除锁定，恢复为输入到当前光标。Alt+/ 和 -unlock 都走这里。
 func (m *Manager) Unlock() {
 	m.mu.Lock()
 	was := m.locked
@@ -157,17 +159,16 @@ func (m *Manager) Unlock() {
 const (
 	lineBackground = "方式：后台发送，不切换窗口"
 	lineForeground = "方式：切换至该窗口后发送"
-	lineUnlock     = "再次按 Alt+/ 解除锁定"
-	lineUnlockAny  = "连按两次 Alt+/ 解除锁定"
+	lineUnlock     = "按 Alt+/ 解除锁定"
 )
 
-// Toggle 按当前前台窗口处理一次 Alt+/ 单击。
+// Toggle 按当前前台窗口处理一次 Alt+. 。
 func (m *Manager) Toggle() { m.press(m.foreground()) }
 
-// press 处理一次 Alt+/ 单击，h 是按下时的前台窗口。
+// press 处理一次 Alt+. ，h 是按下时的前台窗口。
 func (m *Manager) press(h uintptr) {
 	if h == 0 {
-		m.notifyAs(LevelWarning, "未检测到活动窗口", "请先激活目标窗口，再按 Alt+/")
+		m.notifyAs(LevelWarning, "未检测到活动窗口", "请先激活目标窗口，再按 Alt+.")
 		return
 	}
 	title, class, pid := m.describe(h)
@@ -222,7 +223,7 @@ func (m *Manager) LockConsolePID(pid uint32) {
 		return
 	}
 	m.set(target{kind: kindConsole, pid: c.PID, start: c.Start})
-	m.notifyAs(LevelSuccess, "已锁定终端", lockedBody(consoleName("", c), lineBackground, lineUnlockAny))
+	m.notifyAs(LevelSuccess, "已锁定终端", lockedBody(consoleName("", c), lineBackground, lineUnlock))
 }
 
 // Inject 按当前锁定状态输入文本。锁定的目标已关闭时返回 wintype.ErrTargetClosed。
@@ -253,8 +254,14 @@ const (
 	LevelError                // 红色：操作失败
 )
 
+// Notice 是一条通知。
+type Notice struct {
+	Level      Level
+	Title, Msg string
+}
+
 // SetNotifier 设置通知函数，nil 表示不再通知。
-func (m *Manager) SetNotifier(fn func(level Level, title, msg string)) {
+func (m *Manager) SetNotifier(fn func(Notice)) {
 	m.mu.Lock()
 	m.notify = fn
 	m.mu.Unlock()
@@ -265,11 +272,15 @@ func (m *Manager) Notify(title, msg string) { m.notifyAs(LevelWarning, title, ms
 
 // notifyAs 在屏幕右下角弹出提示卡片；没有可用通知通道时忽略。
 func (m *Manager) notifyAs(level Level, title, msg string) {
+	m.post(Notice{Level: level, Title: title, Msg: msg})
+}
+
+func (m *Manager) post(n Notice) {
 	m.mu.Lock()
 	fn := m.notify
 	m.mu.Unlock()
 	if fn != nil {
-		fn(level, title, msg)
+		fn(n)
 	}
 }
 func displayName(title string) string {
