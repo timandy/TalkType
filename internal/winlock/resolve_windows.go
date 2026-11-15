@@ -26,16 +26,16 @@ const maxAncestorDepth = 32
 const (
 	// 缩小的像素数要大于一个字符宽，保证终端列数一定会变。
 	resizeProbePixels  = 24
-	resizeProbeTimeout = 500 * time.Millisecond
+	resizeProbeTimeout = 300 * time.Millisecond // 实测正在显示的终端几十毫秒内就有反应
 )
 
 // resolveConsole 找出窗口 hwnd 里承载的终端会话：
 //  1. 枚举所有 shell 进程，查询它们所在的控制台；
 //  2. 控制台窗口就是 hwnd（传统控制台），或伪控制台的所有者是 hwnd（Windows Terminal）；
 //  3. 都没有时，退回到“shell 是 hwnd 所属进程的子孙”（JetBrains、VS Code 终端）；
-//  4. 同一个控制台里的多个 shell 只算一个；仍有多个时找当前标签页：
-//     - Windows Terminal：窗口标题跟随当前标签，用标题探测；
-//     - JetBrains / VS Code（窗口标题与标签无关）：看哪个终端最近收到过键盘输入。
+//  4. 同一个控制台里的多个 shell 只算一个；
+//  5. 窗口本身是终端时：只有一个就直接锁定，多个标签用标题探测找当前标签；
+//  6. IDE 里的终端：用尺寸探测确认正在显示的那一个，确认不了就按普通窗口处理。
 //
 // 返回匹配结果和候选数量；数量为 0 或大于 1 时调用方按普通窗口处理。
 // 返回 -1 表示当前选中的是本程序自己所在的终端，不能锁定（否则消息会输回自己）。
@@ -90,17 +90,17 @@ func resolveConsole(hwnd uintptr, winPID uint32) (consoleMatch, int) {
 	}
 	cands = dedupeByConsole(cands, parent)
 
-	switch {
-	case len(cands) == 0 && self != nil:
-		return consoleMatch{}, -1
-	case len(cands) == 0:
-		return consoleMatch{}, 0
-	case len(cands) == 1 && self == nil:
-		return toMatch(cands[0]), 1
-	}
-
-	// 多个候选，或者窗口里还有本程序自己的终端：确认当前选中的是哪个标签。
 	if viaOwner {
+		// 窗口本身就是终端（传统控制台、Windows Terminal）。
+		switch {
+		case len(cands) == 0 && self != nil:
+			return consoleMatch{}, -1
+		case len(cands) == 0:
+			return consoleMatch{}, 0
+		case len(cands) == 1 && self == nil:
+			return toMatch(cands[0]), 1
+		}
+		// 多个标签：窗口标题跟随当前标签，用标题探测。
 		pids := make([]uint32, len(cands))
 		for i, c := range cands {
 			pids[i] = c.PID
@@ -114,30 +114,35 @@ func resolveConsole(hwnd uintptr, winPID uint32) (consoleMatch, int) {
 		}
 	}
 
+	// IDE 里的终端（或标题探测失败）：终端不一定显示在窗口里，必须用尺寸探测确认。
+	// 只有确认到唯一一个正在显示的终端才后台写入，否则按普通窗口处理（发送时切前台）。
 	all := cands
 	if self != nil {
 		all = append(append([]wintype.ConsoleInfo(nil), cands...), *self)
 	}
-	pick, ok := visibleBySize(hwnd, all)
-	if !ok {
-		pick, ok = mostRecentInput(all)
+	if len(all) == 0 {
+		return consoleMatch{}, 0
 	}
-	if ok {
-		if self != nil && pick.PID == self.PID {
+	visible := visibleBySize(hwnd, all)
+	switch len(visible) {
+	case 0:
+		logf("窗口里没有正在显示的终端，按普通窗口处理")
+		return consoleMatch{}, 0
+	case 1:
+		if self != nil && visible[0].PID == self.PID {
 			return consoleMatch{}, -1
 		}
-		return toMatch(pick), 1
+		return toMatch(visible[0]), 1
+	default:
+		return consoleMatch{}, len(visible)
 	}
-	if self != nil {
-		return consoleMatch{}, -1
-	}
-	return consoleMatch{}, len(cands)
 }
 
-// visibleBySize 找出窗口里当前显示的那个终端标签：把窗口临时缩小几个像素再恢复。
-// IDE 只会调整可见终端的尺寸，而尺寸变化会通过 ConPTY 传给该标签的宿主进程，
-// 使它的读计数增加；后台标签不受影响。整个过程约 0.1～0.5 秒，窗口边缘会轻微闪一下。
-func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) (wintype.ConsoleInfo, bool) {
+// visibleBySize 找出窗口里正在显示的终端：把窗口临时缩小几个像素再恢复。
+// IDE 只会调整正在显示的终端的尺寸，尺寸变化会通过 ConPTY 传给该终端的宿主进程，
+// 使它的读计数增加；隐藏的终端和后台标签不受影响。有终端在显示时约 0.1 秒，
+// 没有时要等满 resizeProbeTimeout，窗口边缘会轻微闪一下。窗口最小化等无法探测的情况返回空。
+func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) []wintype.ConsoleInfo {
 	hosts := make([]uint32, len(cands))
 	before := make([]uint64, len(cands))
 	for i, c := range cands {
@@ -148,47 +153,42 @@ func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) (wintype.ConsoleIn
 		hosts[i] = h
 		before[i], _ = wintype.ProcessReadOps(h)
 	}
+	changedNow := func(skip []int) []int {
+		var out []int
+		for i, h := range hosts {
+			if h == 0 || contains(skip, i) {
+				continue
+			}
+			if n, ok := wintype.ProcessReadOps(h); ok && n != before[i] {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
 
 	restore, ok := wintype.ShrinkWindow(hwnd, resizeProbePixels)
 	if !ok {
-		return wintype.ConsoleInfo{}, false
+		logf("尺寸探测：窗口无法调整尺寸（可能已最小化）")
+		return nil
 	}
 	var changed []int
 	deadline := time.Now().Add(resizeProbeTimeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(30 * time.Millisecond)
-		changed = changed[:0]
-		for i, h := range hosts {
-			if h == 0 {
-				continue
-			}
-			if n, ok := wintype.ProcessReadOps(h); ok && n != before[i] {
-				changed = append(changed, i)
-			}
-		}
-		if len(changed) > 0 {
-			time.Sleep(60 * time.Millisecond) // 给同时可见的其他终端一点时间，避免误判唯一
-			for i, h := range hosts {
-				if h == 0 || contains(changed, i) {
-					continue
-				}
-				if n, ok := wintype.ProcessReadOps(h); ok && n != before[i] {
-					changed = append(changed, i)
-				}
-			}
+		if changed = changedNow(nil); len(changed) > 0 {
+			time.Sleep(60 * time.Millisecond) // 给同时显示的其他终端一点时间，避免误判唯一
+			changed = append(changed, changedNow(changed)...)
 			break
 		}
 	}
 	restore()
 
+	out := make([]wintype.ConsoleInfo, 0, len(changed))
 	for _, i := range changed {
-		logf("尺寸探测：可见终端 pid=%d 提示符=%q", cands[i].PID, cands[i].Line)
+		logf("尺寸探测：正在显示的终端 pid=%d 提示符=%q", cands[i].PID, cands[i].Line)
+		out = append(out, cands[i])
 	}
-	if len(changed) != 1 {
-		logf("尺寸探测没有得到唯一结果（%d 个终端有反应），改用最近输入判断", len(changed))
-		return wintype.ConsoleInfo{}, false
-	}
-	return cands[changed[0]], true
+	return out
 }
 
 func contains(s []int, v int) bool {
@@ -198,35 +198,6 @@ func contains(s []int, v int) bool {
 		}
 	}
 	return false
-}
-
-// mostRecentInput 从候选里挑出最近收到过键盘输入的终端。没有任何候选收到过输入时返回 false。
-func mostRecentInput(cands []wintype.ConsoleInfo) (wintype.ConsoleInfo, bool) {
-	var best wintype.ConsoleInfo
-	var bestAt time.Time
-	for _, c := range cands {
-		host, ok := wintype.ConsoleHostPID(c.PID)
-		if !ok {
-			continue
-		}
-		at := tracker.lastInput(host)
-		logf("候选终端 pid=%d 宿主=%d 最近输入=%s 提示符=%q", c.PID, host, fmtAgo(at), c.Line)
-		if !at.IsZero() && at.After(bestAt) {
-			best, bestAt = c, at
-		}
-	}
-	if bestAt.IsZero() {
-		return wintype.ConsoleInfo{}, false
-	}
-	logf("选中最近有输入的终端 pid=%d", best.PID)
-	return best, true
-}
-
-func fmtAgo(t time.Time) string {
-	if t.IsZero() {
-		return "无"
-	}
-	return time.Since(t).Round(100*time.Millisecond).String() + "前"
 }
 
 // consoleOfPID 用于 -lock：直接锁定指定进程所在的控制台。

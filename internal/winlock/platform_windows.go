@@ -315,7 +315,6 @@ func (m *Manager) run(ctx context.Context, ready chan<- error) {
 	}
 	h.icon(nimAdd, nifIcon|nifTip, nil)
 	m.SetNotifier(h.enqueue)
-	go tracker.run(ctx)
 	ready <- nil
 
 	done := make(chan struct{})

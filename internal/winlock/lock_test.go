@@ -220,7 +220,7 @@ func TestToggle_AmbiguousTerminalsFallBackToWindow(t *testing.T) {
 	if f.m.tgt.kind != kindWindow || f.m.tgt.hwnd != 1 {
 		t.Fatalf("tgt = %+v", f.m.tgt)
 	}
-	if n := f.lastNote(); !strings.Contains(n[1], "2 个终端") || !strings.Contains(n[1], "按个键") {
+	if n := f.lastNote(); !strings.Contains(n[1], "2 个终端") || !strings.Contains(n[1], "-lock") {
 		t.Errorf("note = %v", n)
 	}
 }

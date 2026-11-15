@@ -113,7 +113,7 @@ type ioCounters struct {
 }
 
 // ProcessReadOps 返回进程累计的读操作次数。对 ConPTY 宿主来说，终端每发来一次输入
-// （按键、焦点变化、窗口大小变化）都会产生一次读。
+// 或尺寸变化都会产生读操作，用于判断哪个终端正在显示。
 func ProcessReadOps(pid uint32) (uint64, bool) {
 	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, pid)
 	if err != nil {

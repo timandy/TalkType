@@ -196,8 +196,8 @@ func (m *Manager) press(h uintptr) {
 		m.Notify(verb+"当前终端", fmt.Sprintf("消息会在后台发送到「%s」，不会切换窗口。%s",
 			consoleName(winName, c), tail))
 	case n > 1:
-		m.Notify(verb+"当前窗口", fmt.Sprintf("「%s」里有 %d 个终端，分不清是哪一个，发送时会短暂切到该窗口。"+
-			"在目标终端里随便按个键再按 Alt+/ ，就能锁定到它。", winName, n))
+		m.Notify(verb+"当前窗口", fmt.Sprintf("「%s」里同时显示了 %d 个终端，分不清是哪一个，发送时会短暂切到该窗口。"+
+			"想后台发送，可在目标终端里运行 clawbot-ilink-relay -lock 。", winName, n))
 	default:
 		m.Notify(verb+"当前窗口", fmt.Sprintf("消息只会发送到「%s」，发送时会短暂切换到该窗口。%s", winName, tail))
 	}
