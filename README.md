@@ -19,6 +19,8 @@
 - **断线重连**：指数退避 + 抖动；会话过期（`-14`）自动重新登录
 - **Unicode 键入**：中文、Emoji 直接输入，无需剪贴板和输入法
 - **发送者白名单**：只处理指定微信用户的消息
+- **锁定窗口或终端**：Alt+/ 锁定目标；终端（PowerShell、Windows Terminal、JetBrains / VS Code 终端）在后台直接写入，不切换窗口
+- **消息来源可替换**：微信，或调试用的控制台输入
 
 ## 工作流程
 
@@ -196,7 +198,51 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 4. 可选等待后发送回车按下/抬起
 
 `INPUT` 结构按 64 位（40 字节）/ 32 位（28 字节）分别构造。键击作用于**当前前台窗口**，
-因此运行前需把目标窗口置前并点中输入框。
+因此未锁定时需把目标窗口置前并点中输入框；锁定后的发送方式见 [docs/window-lock.md](docs/window-lock.md)。
+
+## 锁定窗口或终端（Alt+/）
+
+快捷键：
+
+| 操作 | 效果 |
+|---|---|
+| 未锁定时按 Alt+/ | 锁定当前窗口或终端 |
+| 已锁定，在**别的**窗口或终端标签里按 Alt+/ | 锁定切换到当前这个 |
+| 已锁定，在**锁定的那个**里按 Alt+/ | 解除锁定 |
+| 快速连按两下 Alt+/ | 无论在哪里，直接解除锁定 |
+
+单击 Alt+/ 会等约 0.35 秒确认不是连按，然后才生效。
+
+锁定后的发送方式：
+
+- **终端**（PowerShell、cmd、Windows Terminal、IntelliJ IDEA / GoLand 等 JetBrains 终端、VS Code 终端）：
+  在后台直接写入该终端，**不切换窗口、不闪烁、不打断你正在别处打字**。
+  - Windows Terminal 有多个标签时，按窗口标题确认当前标签。
+  - JetBrains / VS Code 有多个终端标签时，锁定**当前显示的那个标签**：按下 Alt+/ 后，程序把窗口临时缩小 24 像素再恢复（约 0.2 秒，窗口边缘会轻微闪一下），
+    IDE 只会调整可见终端的尺寸，由此确定是哪个标签。Reworked 2025 和 Classic 引擎、Window / Float / 停靠等显示模式都适用。
+    确定不了时（例如终端面板被隐藏），退回到「最近有键盘输入的标签」。通知里会显示锁定标签的提示符，方便确认。
+  - 也可以在目标终端里运行 `clawbot-ilink-relay.exe -lock` 精确锁定它；`-unlock` 解除。
+- **其他窗口**（浏览器等）：发送时短暂切到该窗口输入，再切回原来的窗口。
+- 锁定的窗口或终端关闭后，消息不再发送（该消息被丢弃），并弹出提示。
+- 每次状态变化都会在 Windows 通知栏弹出提示（运行期间托盘区有一个图标）。
+- 如果 Alt+/ 已被其他程序占用，启动时会打印警告，锁定功能不可用。
+- 以管理员身份运行的终端无法后台写入，除非本程序也以管理员身份运行。
+
+原理、支持的窗口类别和已知限制详见 [docs/window-lock.md](docs/window-lock.md)。
+
+## 消息来源
+
+- `-source wechat`（默认）：微信。
+- `-source console`：调试用，不连接微信，在本程序窗口里输入文字测试发送。
+
+控制台来源的用法：
+
+```bat
+clawbot-ilink-relay.exe -source console
+```
+
+每输入一行并回车，就当作收到一条消息。先切到目标终端按 Alt+/ 锁定，再回到本窗口输入即可。
+未锁定时，回车后有 3 秒时间切到目标窗口。
 
 ## 常见问题
 
@@ -207,7 +253,7 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 | 中文变成乱码或丢失 | 目标控件需支持 `WM_CHAR` / Unicode 输入；部分游戏、远程桌面或安全控件会拦截合成键击 |
 | 偶尔重复输入 | 服务端未返回 `message_id` 时无法去重，属于预期情况 |
 | 频繁出现重新扫码 | 微信侧主动失效或重复绑定顶号，重新扫码即可 |
-| 输入到了别的窗口 | 程序不锁定窗口，键入跟随当前前台焦点，请勿在消息到达时切换窗口 |
+| 输入到了别的窗口 | 未锁定时键入跟随当前前台焦点；按 Alt+/ 锁定目标窗口或终端，见下文和 [docs/window-lock.md](docs/window-lock.md) |
 
 日志直接输出到控制台，前缀为 `[clawbot]`，可据此判断登录、收消息、ACK 与重连状态。
 
@@ -226,20 +272,30 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 clawbot-ilink-relay/
 ├── cmd/
 │   └── clawbot-ilink-relay/
-│       └── main.go          程序入口：参数、配置与凭证初始化、启动
+│       └── main.go          程序入口：参数、选择消息来源、装配投递与锁定
 ├── internal/
 │   ├── config/
 │   │   └── config.go        配置结构、默认值、校验
 │   ├── store/
 │   │   └── store.go         bot_token、游标、context_token、ACK 持久化
-│   ├── ilink/
+│   ├── relay/
+│   │   └── relay.go         消息来源接口 Source、投递器 Deliverer
+│   ├── ilink/                微信消息来源
 │   │   ├── protocol.go      iLink JSON 协议结构
 │   │   ├── client.go        签名、登录、长轮询、ACK、重连、sendmessage
 │   │   └── util.go          随机数、退避、休眠、打开链接
+│   ├── console/
+│   │   └── source.go        控制台消息来源（调试用）
+│   ├── winlock/              Alt+/ 锁定：状态与语义、目标识别、热键、托盘通知
 │   └── wintype/
 │       ├── options.go       输入参数
 │       ├── input_windows.go SendInput Unicode 键入（//go:build windows）
-│       └── input_other.go   非 Windows 占位实现
+│       ├── window_windows.go 切前台输入、窗口信息
+│       ├── console_windows.go 后台写入终端、辅助子进程
+│       ├── process_windows.go 进程快照、控制台宿主、读操作计数
+│       └── *_other.go       非 Windows 占位实现
+├── docs/
+│   └── window-lock.md       锁定功能的原理与支持范围
 ├── config.json              运行配置
 ├── token.json               运行后生成：凭证与游标
 ├── go.mod
@@ -250,7 +306,8 @@ clawbot-ilink-relay/
 
 - `cmd` 只负责进程生命周期与依赖装配
 - `internal/ilink` 不直接操作文件，凭证读写全部通过 `internal/store`
-- `internal/wintype` 隔离全部 Win32 调用，其他包不依赖 `syscall` / `unsafe`
+- `internal/wintype` 和 `internal/winlock` 的 `*_windows.go` 承载 Win32 调用，其他包不依赖 `syscall` / `unsafe`
+- `internal/ilink` 只是消息来源之一，不直接调用键盘输入，投递统一经 `internal/relay`
 - `internal/config` 无内部依赖，可被任意层引用
 
 ## 许可证

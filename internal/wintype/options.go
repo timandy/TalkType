@@ -1,6 +1,9 @@
 package wintype
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Options 控制文本输入行为。
 type Options struct {
@@ -9,3 +12,6 @@ type Options struct {
 	PressEnter bool          // 是否在文本后发送回车
 	MaxRetries int           // 失败重试次数
 }
+
+// ErrTargetClosed 表示锁定的目标窗口已经不存在。
+var ErrTargetClosed = errors.New("wintype: 目标窗口已关闭")

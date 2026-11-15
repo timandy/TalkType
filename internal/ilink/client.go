@@ -22,7 +22,7 @@ import (
 
 	"clawbot-ilink-relay/internal/config"
 	"clawbot-ilink-relay/internal/store"
-	"clawbot-ilink-relay/internal/wintype"
+	"clawbot-ilink-relay/internal/relay"
 )
 
 const (
@@ -41,6 +41,7 @@ type Client struct {
 	store      *store.TokenStore
 	logger     *log.Logger
 	httpClient *http.Client
+	handle     relay.Handler
 }
 
 // NewClient 创建 iLink 客户端。
@@ -251,8 +252,14 @@ func (c *Client) pollQRStatus(ctx context.Context, base, qrcode string) (*QRStat
 // 消息轮询 / ACK / 重连
 // ---------------------------------------------------------------------------
 
-// Run 常驻运行：未登录先扫码，随后进入长轮询；异常时按退避策略恢复。
-func (c *Client) Run(ctx context.Context) error {
+var _ relay.Source = (*Client)(nil)
+
+// Name 实现 relay.Source。
+func (c *Client) Name() string { return "微信" }
+
+// Run 实现 relay.Source，常驻运行：未登录先扫码，随后进入长轮询；异常时按退避策略恢复。
+func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
+	c.handle = handle
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
 	backoff := minDelay
@@ -397,13 +404,13 @@ func (c *Client) handleMessage(ctx context.Context, msg *WeixinMessage) bool {
 	}
 
 	c.logger.Printf("收到文本消息 from=%s id=%d: %s", msg.FromUserID, key, truncate(text, 100))
-	opts := wintype.Options{
-		TypeDelay:  time.Duration(c.cfg.Inject.TypeDelayMS) * time.Millisecond,
-		EnterDelay: time.Duration(c.cfg.Inject.EnterDelayMS) * time.Millisecond,
-		PressEnter: c.cfg.Inject.PressEnter,
-		MaxRetries: c.cfg.Inject.MaxRetries,
+	err := c.handle(ctx, relay.Message{From: msg.FromUserID, Text: text})
+	if errors.Is(err, relay.ErrDiscarded) {
+		c.logger.Printf("消息 id=%d 未发送: %v", key, err)
+		c.markAcked(key)
+		return true
 	}
-	if err := wintype.TypeWithRetry(text, opts); err != nil {
+	if err != nil {
 		c.logger.Printf("文字输入失败: %v", err)
 		return false
 	}
@@ -414,7 +421,7 @@ func (c *Client) handleMessage(ctx context.Context, msg *WeixinMessage) bool {
 			c.logger.Printf("发送 ACK 回复失败: %v", err)
 		}
 	}
-	c.logger.Println("已输入到光标并回车，消息已 ACK")
+	c.logger.Println("消息已投递并 ACK")
 	return true
 }
 
