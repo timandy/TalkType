@@ -38,7 +38,7 @@ const (
 	dtEndEllipsis    = 0x8000
 	fwNormal         = 400
 	fwBold           = 700
-	cleartypeQuality = 5
+	antialiasQuality = 4
 	transparentBk    = 1
 	dpiPerMonitorV2  = ^uintptr(3) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 )
@@ -137,7 +137,7 @@ func utf16Ptr(s string) *uint16 {
 
 func createFont(height int32, weight int32, face string) uintptr {
 	f, _, _ := procCreateFontW.Call(uintptr(uint32(-height)), 0, 0, 0, uintptr(weight), 0, 0, 0,
-		1 /* DEFAULT_CHARSET */, 0, 0, cleartypeQuality, 0, uintptr(unsafe.Pointer(utf16Ptr(face))))
+		1 /* DEFAULT_CHARSET */, 0, 0, antialiasQuality, 0, uintptr(unsafe.Pointer(utf16Ptr(face))))
 	return f
 }
 
@@ -168,9 +168,10 @@ func renderToast(level Level, title, msg string, dpi uint32) (*toastImage, bool)
 	s := float64(dpi) / 96
 	px := func(v float64) int32 { return int32(math.Round(v * s)) }
 
-	cardW, pad, icon, iconGap, radius, margin := px(340), px(14), px(34), px(12), float64(px(12)), px(14)
-	lineGap := px(3)
+	cardW, pad, icon, iconGap, radius, margin := px(360), px(15), px(36), px(12), float64(px(12)), px(14)
+	lineGap := px(4)
 	textW := cardW - pad*2 - icon - iconGap
+	ceilDiv := func(v int32) int32 { return (v + textSS - 1) / textSS }
 
 	dc, _, _ := procCreateCompatibleDC.Call(0)
 	if dc == 0 {
@@ -178,9 +179,10 @@ func renderToast(level Level, title, msg string, dpi uint32) (*toastImage, bool)
 	}
 	img := &toastImage{dc: dc, margin: margin, cardW: cardW}
 
-	titleFont := createFont(px(15), fwBold, "Microsoft YaHei UI")
-	msgFont := createFont(px(13), fwNormal, "Microsoft YaHei UI")
-	glyphFont := createFont(px(19), fwBold, "Segoe UI Symbol")
+	// 文字按 textSS 倍尺寸排版和绘制，再缩小回来（见第 3 步）。
+	titleFont := createFont(px(16)*textSS, fwBold, "Microsoft YaHei UI")
+	msgFont := createFont(px(14)*textSS, fwNormal, "Microsoft YaHei UI")
+	glyphFont := createFont(px(20)*textSS, fwBold, "Segoe UI Symbol")
 	defer func() {
 		for _, f := range []uintptr{titleFont, msgFont, glyphFont} {
 			procDeleteObject.Call(f)
@@ -188,18 +190,19 @@ func renderToast(level Level, title, msg string, dpi uint32) (*toastImage, bool)
 	}()
 
 	old, _, _ := procSelectObject.Call(dc, titleFont)
-	titleH := measureText(dc, title, textW, dtSingleLine|dtNoPrefix)
+	titleHS := measureText(dc, title, textW*textSS, dtSingleLine|dtNoPrefix)
 	procSelectObject.Call(dc, msgFont)
 	msgFmt := uint32(dtWordBreak | dtEditControl | dtEndEllipsis | dtNoPrefix)
-	msgH := int32(0)
+	msgHS := int32(0)
 	if msg != "" {
-		lineH := measureText(dc, "国", textW, dtSingleLine|dtNoPrefix)
-		msgH = measureText(dc, msg, textW, msgFmt)
-		if limit := lineH * 4; msgH > limit {
-			msgH = limit
+		lineHS := measureText(dc, "国", textW*textSS, dtSingleLine|dtNoPrefix)
+		msgHS = measureText(dc, msg, textW*textSS, msgFmt)
+		if limit := lineHS * toastMaxLines; msgHS > limit {
+			msgHS = limit
 		}
 	}
 	procSelectObject.Call(dc, old)
+	titleH, msgH := ceilDiv(titleHS), ceilDiv(msgHS)
 
 	content := titleH
 	if msgH > 0 {
@@ -255,30 +258,56 @@ func renderToast(level Level, title, msg string, dpi uint32) (*toastImage, bool)
 			pixels[i] = uint32(r+(255-r)*a)<<16 | uint32(g+(255-g)*a)<<8 | uint32(b+(255-b)*a)
 		}
 	}
-	procGdiFlush.Call()
-
-	// 3. 文字：图标符号、标题、正文，白色。
-	procSetBkMode.Call(dc, transparentBk)
-	procSetTextColor.Call(dc, 0xFFFFFF)
-	ix, iy := margin+pad, margin+pad
-	procSelectObject.Call(dc, glyphFont)
-	drawText(dc, style.glyph, &rect{ix, iy, ix + icon, iy + icon}, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
-
+	// 3. 文字：按 textSS 倍尺寸画到灰度蒙版上，再按块平均缩小，得到平滑的抗锯齿文字，
+	//    不依赖 ClearType 和系统字体平滑设置。标题和图标画在红色通道，正文画在绿色通道，
+	//    以便分别着色。
 	tx, ty := margin+pad+icon+iconGap, margin+pad
 	if content < icon { // 内容比图标矮时垂直居中
 		ty += (icon - content) / 2
 	}
-	procSelectObject.Call(dc, titleFont)
-	drawText(dc, title, &rect{tx, ty, tx + textW, ty + titleH}, dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	if msgH > 0 {
-		procSetTextColor.Call(dc, 0xF9F5F1) // COLORREF 为 0x00BBGGRR：接近白色的浅灰
-		procSelectObject.Call(dc, msgFont)
-		my := ty + titleH + lineGap
-		drawText(dc, msg, &rect{tx, my, tx + textW, my + msgH}, msgFmt)
+	rx0, ry0 := margin+pad, margin+pad // 蒙版覆盖的区域：卡片内边距以内
+	rw, rh := cardW-pad*2, cardH-pad*2
+	mask, ok := newTextMask(rw*textSS, rh*textSS)
+	if !ok {
+		img.release()
+		return nil, false
 	}
-	procSelectObject.Call(dc, old)
+	defer mask.release()
+	mdc := mask.dc
+	procSetBkMode.Call(mdc, transparentBk)
+	rel := func(x, y, w, h int32) *rect { // 卡片坐标 → 蒙版坐标
+		return &rect{(x - rx0) * textSS, (y - ry0) * textSS, (x - rx0 + w) * textSS, (y - ry0 + h) * textSS}
+	}
+	procSetTextColor.Call(mdc, 0x0000FF) // COLORREF 0x00BBGGRR：纯红
+	mold, _, _ := procSelectObject.Call(mdc, glyphFont)
+	drawText(mdc, style.glyph, rel(rx0, ry0, icon, icon), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+	procSelectObject.Call(mdc, titleFont)
+	drawText(mdc, title, rel(tx, ty, textW, titleH), dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	if msgHS > 0 {
+		procSetTextColor.Call(mdc, 0x00FF00) // 纯绿
+		procSelectObject.Call(mdc, msgFont)
+		r := rel(tx, ty+titleH+lineGap, textW, 0)
+		r.bottom = r.top + msgHS
+		drawText(mdc, msg, r, msgFmt)
+	}
+	procSelectObject.Call(mdc, mold)
 	procGdiFlush.Call()
 
+	const titleColor, msgColor = 0xFFFFFF, 0xF1F5F9 // 白色；正文为略暗的白
+	for y := int32(0); y < rh; y++ {
+		for x := int32(0); x < rw; x++ {
+			ct, cm := mask.coverage(x, y)
+			if ct == 0 && cm == 0 {
+				continue
+			}
+			i := int(ry0+y)*int(img.w) + int(rx0+x)
+			p := pixels[i]
+			r, g, b := float64(p>>16&0xFF), float64(p>>8&0xFF), float64(p&0xFF)
+			r, g, b = blendOver(r, g, b, titleColor, ct)
+			r, g, b = blendOver(r, g, b, msgColor, cm)
+			pixels[i] = uint32(r+0.5)<<16 | uint32(g+0.5)<<8 | uint32(b+0.5)
+		}
+	}
 	// 4. 透明度：圆角卡片内不透明（边缘抗锯齿），外面是向下偏移的柔和阴影。
 	shadowOff, shadowR := float64(px(3)), float64(margin)
 	for y := int32(0); y < img.h; y++ {
@@ -455,4 +484,77 @@ func (t *toaster) closeAll() {
 		procKillTimer.Call(t.host, toastTimerID)
 		t.timerOn = false
 	}
+}
+
+// 文字超采样倍数：按 textSS 倍尺寸绘制，再缩小到原尺寸，相当于 textSS² 倍抗锯齿。
+const textSS = 4
+
+// toastMaxLines 是正文最多显示的行数，超出部分以省略号结尾。
+const toastMaxLines = 4
+
+// textMask 是绘制超采样文字用的 32 位位图，背景为黑色。
+type textMask struct {
+	dc, bmp, oldBmp uintptr
+	w, h            int32
+	pixels          []uint32
+}
+
+func newTextMask(w, h int32) (*textMask, bool) {
+	if w <= 0 || h <= 0 {
+		return nil, false
+	}
+	dc, _, _ := procCreateCompatibleDC.Call(0)
+	if dc == 0 {
+		return nil, false
+	}
+	bi := bitmapInfoHeader{biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32}
+	bi.biSize = uint32(unsafe.Sizeof(bi))
+	var bits unsafe.Pointer
+	bmp, _, _ := procCreateDIBSection.Call(dc, uintptr(unsafe.Pointer(&bi)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
+	if bmp == 0 || bits == nil {
+		procDeleteDC.Call(dc)
+		return nil, false
+	}
+	m := &textMask{dc: dc, bmp: bmp, w: w, h: h}
+	m.oldBmp, _, _ = procSelectObject.Call(dc, bmp)
+	m.pixels = unsafe.Slice((*uint32)(bits), int(w)*int(h)) // CreateDIBSection 的内容初始为 0，即黑色
+	return m, true
+}
+
+func (m *textMask) release() {
+	procSelectObject.Call(m.dc, m.oldBmp)
+	procDeleteDC.Call(m.dc)
+	procDeleteObject.Call(m.bmp)
+}
+
+// coverage 返回原尺寸像素 (x, y) 处标题（红色通道）和正文（绿色通道）的覆盖率，取值 0～1。
+func (m *textMask) coverage(x, y int32) (title, body float64) {
+	var sr, sg uint32
+	for dy := int32(0); dy < textSS; dy++ {
+		row := int(y*textSS+dy) * int(m.w)
+		for dx := int32(0); dx < textSS; dx++ {
+			p := m.pixels[row+int(x*textSS+dx)]
+			sr += p >> 16 & 0xFF
+			sg += p >> 8 & 0xFF
+		}
+	}
+	n := float64(textSS*textSS) * 255
+	return textGamma(float64(sr) / n), textGamma(float64(sg) / n)
+}
+
+// textGamma 略微加粗半覆盖的边缘像素：浅色文字叠在彩色底上时，线性混合会让笔画显得偏细。
+func textGamma(c float64) float64 {
+	if c <= 0 {
+		return 0
+	}
+	return math.Pow(c, 0.8)
+}
+
+// blendOver 把颜色 c（0xRRGGBB）按覆盖率 a 叠加到 (r, g, b) 上。
+func blendOver(r, g, b float64, c uint32, a float64) (float64, float64, float64) {
+	if a <= 0 {
+		return r, g, b
+	}
+	cr, cg, cb := float64(c>>16&0xFF), float64(c>>8&0xFF), float64(c&0xFF)
+	return r + (cr-r)*a, g + (cg-g)*a, b + (cb-b)*a
 }

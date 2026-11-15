@@ -11,7 +11,7 @@ func TestRenderToast(t *testing.T) {
 	}
 	defer img.release()
 
-	if img.cardW != 340 || img.w != img.cardW+2*img.margin || img.h != img.cardH+2*img.margin {
+	if img.cardW != 360 || img.w != img.cardW+2*img.margin || img.h != img.cardH+2*img.margin {
 		t.Errorf("size: card %dx%d, window %dx%d, margin %d", img.cardW, img.cardH, img.w, img.h, img.margin)
 	}
 	at := func(x, y int32) uint32 { return img.pixels[int(y)*int(img.w)+int(x)] }
@@ -41,8 +41,8 @@ func TestRenderToast(t *testing.T) {
 		t.Fatal("render at 192 dpi failed")
 	}
 	defer big.release()
-	if big.cardW != 680 {
-		t.Errorf("200%% scaling: cardW = %d, want 680", big.cardW)
+	if big.cardW != 720 {
+		t.Errorf("200%% scaling: cardW = %d, want 720", big.cardW)
 	}
 }
 
@@ -60,5 +60,50 @@ func TestRenderToastLongMessageIsCapped(t *testing.T) {
 	}
 	if tall.cardH > short.cardH+4*30 {
 		t.Errorf("long message should be capped at 4 lines, cardH=%d", tall.cardH)
+	}
+}
+
+// 文字应当是灰度抗锯齿的：标题区域里除了底色和纯白，还应有大量中间亮度的边缘像素。
+func TestRenderToastTextIsAntialiased(t *testing.T) {
+	img, ok := renderToast(LevelInfo, "已解除锁定", "", 96)
+	if !ok {
+		t.Fatal("render failed")
+	}
+	defer img.release()
+	// 标题所在的区域：图标右侧、卡片内边距以内
+	x0 := img.margin + img.cardW/4
+	x1 := img.margin + img.cardW*3/4
+	y0, y1 := img.margin+8, img.margin+img.cardH-8
+	edge, solid := 0, 0
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			p := img.pixels[int(y)*int(img.w)+int(x)]
+			g := p >> 8 & 0xFF // 蓝紫底色的绿色分量较低，文字为白色
+			switch {
+			case g >= 250:
+				solid++
+			case g > 150:
+				edge++
+			}
+		}
+	}
+	if solid == 0 {
+		t.Fatal("no text pixels found")
+	}
+	if edge < solid/3 {
+		t.Errorf("text looks aliased: %d edge pixels vs %d solid pixels", edge, solid)
+	}
+}
+
+func TestTextGammaAndBlend(t *testing.T) {
+	if textGamma(0) != 0 || textGamma(1) != 1 || textGamma(0.5) <= 0.5 {
+		t.Error("gamma should keep 0 and 1 and lift mid values")
+	}
+	r, g, b := blendOver(0, 0, 0, 0xFFFFFF, 0.5)
+	if r != 127.5 || g != 127.5 || b != 127.5 {
+		t.Errorf("blendOver = %v %v %v", r, g, b)
+	}
+	if r, _, _ := blendOver(10, 20, 30, 0xFFFFFF, 0); r != 10 {
+		t.Error("zero coverage should not change color")
 	}
 }
