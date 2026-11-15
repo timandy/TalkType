@@ -211,14 +211,15 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 | 已锁定，在**锁定的那个**里按 Alt+. | 解除锁定 |
 | 在任意位置按 Alt+/ | 直接解除锁定 |
 
-左右两个 Alt 键都可以。按下到提示卡片出现，实测 30～240 毫秒。
+左右两个 Alt 键都可以。按下到提示卡片出现，实测 30～260 毫秒。
 
 锁定后的发送方式：
 
 - **终端**（PowerShell、cmd、Windows Terminal、IntelliJ IDEA / GoLand 等 JetBrains 终端、VS Code 终端）：
   在后台直接写入该终端，**不切换窗口、不闪烁、不打断你正在别处打字**。
   - Windows Terminal 有多个标签时，按窗口标题确认当前标签。
-  - JetBrains / VS Code 的终端：按下 Alt+. 后，程序把窗口临时缩小 24 像素再恢复（约 0.2 秒，窗口边缘会轻微闪一下）。
+  - JetBrains / VS Code 的终端：按下 Alt+. 后，程序把窗口底边临时上移再恢复（只有窗口底部会轻微闪一下，宽度不变）。先上移 24 像素，没有反应再逐级加到 64、120 像素，
+    终端停靠在 IDE 主窗口里时也能识别。终端单独成窗口时约 0.1 秒。
     IDE 只会调整正在显示的终端的尺寸，由此确定锁定哪个标签。Reworked 2025 和 Classic 引擎、Window / Float / 停靠等显示模式都适用。
     通知里会显示锁定标签的提示符，方便确认。
   - 也可以在目标终端里运行 `clawbot-ilink-relay.exe -lock` 精确锁定它；`-unlock` 解除。

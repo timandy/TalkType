@@ -36,32 +36,77 @@ var (
 )
 
 var (
-	procGetWindowRect = user32DLL.NewProc("GetWindowRect")
-	procSetWindowPos  = user32DLL.NewProc("SetWindowPos")
+	procGetWindowRect         = user32DLL.NewProc("GetWindowRect")
+	procSetWindowPos          = user32DLL.NewProc("SetWindowPos")
+	procGetDpiForWindow       = user32DLL.NewProc("GetDpiForWindow")
+	procSetThreadDpiAwareness = user32DLL.NewProc("SetThreadDpiAwarenessContext")
+	dpiAwarenessPerMonitorV2  = ^uintptr(3) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 )
 
 type winRect struct{ left, top, right, bottom int32 }
 
 const swpResizeOnly = 0x0002 | 0x0004 | 0x0010 // SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
 
-// ShrinkWindow 把窗口宽高各缩小 by 像素，返回恢复原尺寸的函数。窗口最小化或
-// 取不到尺寸时返回 false。用于让窗口里可见的终端收到一次尺寸变化。
-func ShrinkWindow(h uintptr, by int32) (restore func(), ok bool) {
+// HeightShrinker 临时调整窗口高度：记下原始尺寸，按需把底边上移不同距离，最后恢复原样。
+// 宽度和左上角始终不变。用于让窗口里正在显示的终端收到尺寸变化：只改高度时终端只少几行，
+// 列数不变，不会触发整屏重新折行。
+//
+// 调用方需要已经 runtime.LockOSThread，从 BeginShrinkHeight 到 Restore 都在同一线程上：
+// 期间线程临时切到按显示器 DPI 工作，读写的都是物理像素，恢复时尺寸分毫不差。
+type HeightShrinker struct {
+	h      uintptr
+	w, ht  int32 // 原始宽高（物理像素）
+	dpi    int64
+	oldCtx uintptr
+}
+
+// BeginShrinkHeight 记下窗口当前尺寸。窗口最小化或取不到尺寸时返回 false。
+func BeginShrinkHeight(h uintptr) (*HeightShrinker, bool) {
 	if h == 0 || isIconic(h) {
 		return nil, false
 	}
+	s := &HeightShrinker{h: h, dpi: 96}
+	if procSetThreadDpiAwareness.Find() == nil {
+		s.oldCtx, _, _ = procSetThreadDpiAwareness.Call(dpiAwarenessPerMonitorV2)
+	}
 	var r winRect
-	if res, _, _ := procGetWindowRect.Call(h, uintptr(unsafe.Pointer(&r))); res == 0 {
+	if res, _, _ := procGetWindowRect.Call(h, uintptr(unsafe.Pointer(&r))); res == 0 || r.right <= r.left || r.bottom <= r.top {
+		s.resetThread()
 		return nil, false
 	}
-	w, ht := r.right-r.left, r.bottom-r.top
-	if w <= 2*by || ht <= 2*by {
-		return nil, false
+	s.w, s.ht = r.right-r.left, r.bottom-r.top
+	if procGetDpiForWindow.Find() == nil {
+		if d, _, _ := procGetDpiForWindow.Call(h); d != 0 {
+			s.dpi = int64(d)
+		}
 	}
-	procSetWindowPos.Call(h, 0, 0, 0, uintptr(w-by), uintptr(ht-by), swpResizeOnly)
-	return func() {
-		procSetWindowPos.Call(h, 0, 0, 0, uintptr(w), uintptr(ht), swpResizeOnly)
-	}, true
+	return s, true
+}
+
+// Shrink 把底边相对原始位置上移 by 个逻辑像素（96 DPI 下的像素，按窗口所在显示器的 DPI 换算），
+// 最多上移原始高度的一半。返回实际上移的物理像素数。
+func (s *HeightShrinker) Shrink(by int32) int32 {
+	dy := int32((int64(by)*s.dpi + 48) / 96)
+	if limit := s.ht / 2; dy > limit {
+		dy = limit
+	}
+	if dy <= 0 {
+		return 0
+	}
+	procSetWindowPos.Call(s.h, 0, 0, 0, uintptr(s.w), uintptr(s.ht-dy), swpResizeOnly)
+	return dy
+}
+
+// Restore 恢复原始尺寸，并恢复线程的 DPI 设置。
+func (s *HeightShrinker) Restore() {
+	procSetWindowPos.Call(s.h, 0, 0, 0, uintptr(s.w), uintptr(s.ht), swpResizeOnly)
+	s.resetThread()
+}
+
+func (s *HeightShrinker) resetThread() {
+	if s.oldCtx != 0 {
+		procSetThreadDpiAwareness.Call(s.oldCtx)
+	}
 }
 
 // ForegroundWindow 返回当前前台窗口句柄，没有时返回 0。

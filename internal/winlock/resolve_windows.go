@@ -5,6 +5,7 @@ package winlock
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -23,6 +24,18 @@ var shellExes = map[string]bool{
 
 const maxAncestorDepth = 32
 
+// resizeProbeSteps 是尺寸探测的各级：底边上移的逻辑像素数（96 DPI 下，按显示器 DPI 换算）
+// 和这一级最多等待的时间。正在显示的终端实测 10～60 毫秒内有反应。
+// 24 像素大于一行文字的高度；终端停靠在 IDE 主窗口里、只分到一部分高度时，靠后两级保证行数会变。
+var resizeProbeSteps = []struct {
+	pixels int32
+	wait   time.Duration
+}{
+	{24, 60 * time.Millisecond},
+	{64, 60 * time.Millisecond},
+	{120, 100 * time.Millisecond},
+}
+
 // 自身就是终端的窗口类名：传统控制台和 Windows Terminal。
 var terminalClasses = map[string]bool{
 	"ConsoleWindowClass":            true,
@@ -30,11 +43,8 @@ var terminalClasses = map[string]bool{
 }
 
 const (
-	// 缩小的像素数要大于一个字符宽，保证终端列数一定会变。
-	resizeProbePixels  = 24
-	resizeProbeTimeout = 200 * time.Millisecond // 实测正在显示的终端约 60 毫秒后有反应，留 3 倍余量
-	resizeProbePoll    = 10 * time.Millisecond
-	resizeProbeSettle  = 30 * time.Millisecond // 发现第一个反应后再等一会儿，看有没有同时显示的其他终端
+	resizeProbePoll   = 10 * time.Millisecond
+	resizeProbeSettle = 30 * time.Millisecond // 发现第一个反应后再等一会儿，看有没有同时显示的其他终端
 )
 
 // resolveConsole 找出窗口 hwnd 里承载的终端会话：
@@ -155,10 +165,10 @@ func resolveConsole(hwnd uintptr, winPID uint32) (consoleMatch, int) {
 	}
 }
 
-// visibleBySize 找出窗口里正在显示的终端：把窗口临时缩小几个像素再恢复。
+// visibleBySize 找出窗口里正在显示的终端：把窗口底边临时上移几个像素再恢复。
 // IDE 只会调整正在显示的终端的尺寸，尺寸变化会通过 ConPTY 传给该终端的宿主进程，
 // 使它的读计数增加；隐藏的终端和后台标签不受影响。有终端在显示时约 0.1 秒，
-// 没有时要等满 resizeProbeTimeout，窗口边缘会轻微闪一下。窗口最小化等无法探测的情况返回空。
+// 没有时要等完所有级别（约 0.22 秒），窗口底部会轻微闪一下。窗口最小化等无法探测的情况返回空。
 func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) []wintype.ConsoleInfo {
 	hosts := make([]uint32, len(cands))
 	before := make([]uint64, len(cands))
@@ -183,25 +193,33 @@ func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) []wintype.ConsoleI
 		return out
 	}
 
-	restore, ok := wintype.ShrinkWindow(hwnd, resizeProbePixels)
+	runtime.LockOSThread() // HeightShrinker 会临时调整本线程的 DPI 设置
+	defer runtime.UnlockOSThread()
+	sh, ok := wintype.BeginShrinkHeight(hwnd)
 	if !ok {
 		logf("尺寸探测：窗口无法调整尺寸（可能已最小化）")
 		return nil
 	}
+
+	// 逐级加大上移距离：终端单独成窗口时第一级就有反应；终端停靠在 IDE 主窗口里时，
+	// 上移的高度可能有一部分分给编辑区，后面几级保证终端面板也分到至少一行。
 	var changed []int
-	shrunk := time.Now()
-	deadline := shrunk.Add(resizeProbeTimeout)
-	for time.Now().Before(deadline) {
-		time.Sleep(resizeProbePoll)
-		if changed = changedNow(nil); len(changed) > 0 {
-			logf("尺寸探测：终端在 %v 后有反应", time.Since(shrunk).Round(time.Millisecond))
-			time.Sleep(resizeProbeSettle)
-			changed = append(changed, changedNow(changed)...)
-			break
+	start := time.Now()
+probe:
+	for i, step := range resizeProbeSteps {
+		px := sh.Shrink(step.pixels)
+		stepEnd := time.Now().Add(step.wait)
+		for time.Now().Before(stepEnd) {
+			time.Sleep(resizeProbePoll)
+			if changed = changedNow(nil); len(changed) > 0 {
+				logf("尺寸探测：第 %d 级（上移 %d 像素）在 %v 后有反应", i+1, px, time.Since(start).Round(time.Millisecond))
+				time.Sleep(resizeProbeSettle)
+				changed = append(changed, changedNow(changed)...)
+				break probe
+			}
 		}
 	}
-	restore()
-
+	sh.Restore()
 	out := make([]wintype.ConsoleInfo, 0, len(changed))
 	for _, i := range changed {
 		logf("尺寸探测：正在显示的终端 pid=%d 提示符=%q", cands[i].PID, cands[i].Line)
