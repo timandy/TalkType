@@ -21,15 +21,19 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/store"
 	"wetype/internal/relay"
+	"wetype/internal/store"
 )
 
 const (
-	msgTypeUser  = 1 // 用户发来的消息
-	msgTypeBot   = 2 // Bot 发出的消息
-	stateFinish  = 2
-	itemTypeText = 1
+	msgTypeUser   = 1 // 用户发来的消息
+	msgTypeBot    = 2 // Bot 发出的消息
+	stateFinish   = 2
+	itemTypeText  = 1
+	itemTypeImage = 2
+	itemTypeVoice = 3
+	itemTypeFile  = 4
+	itemTypeVideo = 5
 )
 
 // ErrSessionExpired 表示 iLink 会话过期（errcode/ret = -14），需要重新扫码。
@@ -393,12 +397,14 @@ func (c *Client) handleMessage(ctx context.Context, msg *WeixinMessage) bool {
 	}
 
 	text := extractText(msg)
-	if text == "" {
+	if !c.senderAllowed(msg.FromUserID) {
+		c.logger.Printf("忽略非白名单发送者 %s", msg.FromUserID)
 		c.markAcked(key)
 		return true
 	}
-	if !c.senderAllowed(msg.FromUserID) {
-		c.logger.Printf("忽略非白名单发送者 %s", msg.FromUserID)
+	if text == "" {
+		// 非文字消息只在控制台提示，不输入、不回复。
+		c.logger.Printf("忽略%s from=%s id=%d：暂只支持文字消息", describeItems(msg.ItemList), msg.FromUserID, key)
 		c.markAcked(key)
 		return true
 	}
@@ -480,4 +486,33 @@ func extractText(msg *WeixinMessage) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+// itemTypeNames 是消息条目类型的中文名称，用于控制台提示。
+var itemTypeNames = map[int]string{
+	itemTypeText:  "空白文字",
+	itemTypeImage: "图片",
+	itemTypeVoice: "语音",
+	itemTypeFile:  "文件",
+	itemTypeVideo: "视频",
+}
+
+// describeItems 概括非文字消息包含的内容，例如“语音消息”“图片、文件消息”。
+func describeItems(items []MessageItem) string {
+	var names []string
+	seen := map[string]bool{}
+	for _, it := range items {
+		name, ok := itemTypeNames[it.Type]
+		if !ok {
+			name = fmt.Sprintf("未知类型 %d", it.Type)
+		}
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "空消息"
+	}
+	return strings.Join(names, "、") + "消息"
 }

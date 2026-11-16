@@ -500,3 +500,50 @@ func TestHandleMessage_SendsReplyAfterDelivery(t *testing.T) {
 		t.Errorf("reply = %+v", got.Msg)
 	}
 }
+
+func TestDescribeItems(t *testing.T) {
+	tests := []struct {
+		items []MessageItem
+		want  string
+	}{
+		{[]MessageItem{{Type: itemTypeVoice}}, "语音消息"},
+		{[]MessageItem{{Type: itemTypeImage}, {Type: itemTypeImage}, {Type: itemTypeFile}}, "图片、文件消息"},
+		{[]MessageItem{{Type: 99}}, "未知类型 99消息"},
+		{[]MessageItem{{Type: itemTypeText, TextItem: &TextItem{Text: "  "}}}, "空白文字消息"},
+		{nil, "空消息"},
+	}
+	for _, tc := range tests {
+		if got := describeItems(tc.items); got != tc.want {
+			t.Errorf("describeItems(%+v) = %q, want %q", tc.items, got, tc.want)
+		}
+	}
+}
+
+// 非文字消息只在控制台提示：不投递、不回复，并且 ACK。
+func TestHandleMessage_NonTextIsLoggedOnly(t *testing.T) {
+	var replies int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		replies++
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	var logBuf strings.Builder
+	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL; cfg.Ack.ReplyText = "收到" })
+	c.logger = log.New(&logBuf, "", 0)
+	rec := &recorder{}
+	c.handle = rec.handle
+
+	msg := &WeixinMessage{MessageType: msgTypeUser, FromUserID: "u", MessageID: 7, ItemList: []MessageItem{{Type: itemTypeVoice}}}
+	if !c.handleMessage(context.Background(), msg) {
+		t.Fatal("want true")
+	}
+	if len(rec.msgs) != 0 || replies != 0 {
+		t.Errorf("non-text message must not be delivered or replied: delivered=%d replies=%d", len(rec.msgs), replies)
+	}
+	if !c.store.IsAcked(7) {
+		t.Error("non-text message should be acked")
+	}
+	if out := logBuf.String(); !strings.Contains(out, "忽略语音消息") || !strings.Contains(out, "暂只支持文字消息") {
+		t.Errorf("log = %q", out)
+	}
+}
