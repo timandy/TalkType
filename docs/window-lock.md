@@ -8,14 +8,15 @@
 消息来源（relay.Source）                投递（relay.Deliverer）                 目标
 ┌──────────────────────┐   Message   ┌─────────────────────────┐
 │ 微信 ilink.Client      │ ──────────► │ winlock.Manager.Inject  │ ──► 当前光标（未锁定）
+│ 飞书 feishu.Client     │             │                         │
 │ 控制台 console.Source  │             │  按锁定状态选择发送方式  │ ──► 后台写入终端（锁定终端）
 └──────────────────────┘             └─────────────────────────┘ ──► 切前台输入（锁定其他窗口）
 ```
 
-- **消息来源**只负责拿到消息和自己的确认语义。微信来源负责去重、ACK、游标、白名单、回执；控制台来源逐行读取标准输入。
-  用 `-source wechat|console` 选择。
+- **消息来源**只负责拿到消息和自己的确认语义。微信来源负责去重、ACK、游标、白名单、回执；飞书来源负责长连接、去重、确认帧、白名单、回执；控制台来源逐行读取标准输入。
+  用 `-source wechat|feishu|console` 选择。
 - **投递**统一由 `relay.Deliverer` 完成：串行投递，避免多条消息文字交错。锁定的目标已关闭时弹通知，并返回
-  `relay.ErrDiscarded`，来源据此丢弃该消息（微信来源会 ACK 并推进游标，不会无限重试）。
+  `relay.ErrDiscarded`，来源据此丢弃该消息（微信来源会 ACK 并推进游标，飞书来源回 200，都不会无限重试）。
 
 ## 2. 快捷键
 
@@ -296,6 +297,7 @@ IDE 只会调整**正在显示**的终端的尺寸，尺寸变化会通过 ConPT
 | `internal/relay/relay.go` | `Source`、`Message`、`Handler`、`Deliverer`、`ErrDiscarded` |
 | `internal/console/source.go` | 控制台消息来源 |
 | `internal/ilink/client.go` | 微信消息来源 |
+| `internal/feishu/client.go` | 飞书消息来源（协议见 [feishu.md](feishu.md)） |
 | `internal/winlock/lock.go` | 锁定状态、快捷键语义、通知文案（与平台无关，有单元测试） |
 | `internal/winlock/resolve_windows.go` | 5.2～5.4 的目标识别 |
 | `internal/winlock/platform_windows.go` | 热键、工作协程、通知排队、`-lock`/`-unlock` 通道 |

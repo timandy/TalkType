@@ -26,10 +26,12 @@ import (
 func newTestClient(t *testing.T, mutate func(*config.Config)) *Client {
 	t.Helper()
 	cfg := &config.Config{
-		BaseURL:        "https://default.example.com/",
-		ChannelVersion: "1.0",
-		Signature:      config.SignatureConfig{Enabled: true, Secret: "s3cret"},
-		Ack:            config.AckConfig{MaxAckedIDs: 10},
+		WeChat: config.WeChatConfig{
+			BaseURL:        "https://default.example.com/",
+			ChannelVersion: "1.0",
+			Signature:      config.SignatureConfig{Enabled: true, Secret: "s3cret"},
+		},
+		Ack: config.AckConfig{MaxAckedIDs: 10},
 	}
 	if mutate != nil {
 		mutate(cfg)
@@ -38,7 +40,11 @@ func newTestClient(t *testing.T, mutate func(*config.Config)) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewClient(cfg, st, log.New(io.Discard, "", 0))
+	acked, err := store.LoadAckedIDs(filepath.Join(t.TempDir(), "wechat_acked.ids"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewClient(cfg, st, acked, log.New(io.Discard, "", 0))
 }
 
 func textMsg(text string) []MessageItem {
@@ -93,7 +99,7 @@ func TestSenderAllowed(t *testing.T) {
 	if !c.senderAllowed("anyone") {
 		t.Error("empty whitelist should allow everyone")
 	}
-	c = newTestClient(t, func(cfg *config.Config) { cfg.Filter.AllowedSenders = []string{"a", "b"} })
+	c = newTestClient(t, func(cfg *config.Config) { cfg.WeChat.AllowedSenders = []string{"a", "b"} })
 	if !c.senderAllowed("a") || c.senderAllowed("c") {
 		t.Error("whitelist not enforced")
 	}
@@ -113,11 +119,11 @@ func TestBaseURL(t *testing.T) {
 func TestMarkAcked(t *testing.T) {
 	c := newTestClient(t, nil)
 	c.markAcked(0)
-	if len(c.store.AckedIDs) != 0 {
+	if c.acked.Has("0") {
 		t.Error("key 0 should be ignored")
 	}
 	c.markAcked(5)
-	if !c.store.IsAcked(5) {
+	if !c.acked.Has("5") {
 		t.Error("key 5 should be acked")
 	}
 }
@@ -145,7 +151,7 @@ func TestSignRequest(t *testing.T) {
 	})
 
 	t.Run("disabled", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.Signature.Enabled = false })
+		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.Signature.Enabled = false })
 		req, _ := http.NewRequest(http.MethodPost, "https://x.com/p", nil)
 		c.signRequest(req, body)
 		if req.Header.Get("X-ILink-Signature") != "" {
@@ -154,7 +160,7 @@ func TestSignRequest(t *testing.T) {
 	})
 
 	t.Run("no secret and no token", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.Signature.Secret = "  " })
+		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.Signature.Secret = "  " })
 		req, _ := http.NewRequest(http.MethodPost, "https://x.com/p", nil)
 		c.signRequest(req, body)
 		if req.Header.Get("X-ILink-Signature") != "" {
@@ -163,7 +169,7 @@ func TestSignRequest(t *testing.T) {
 	})
 
 	t.Run("falls back to token secret", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.Signature.Secret = "" })
+		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.Signature.Secret = "" })
 		c.store.SetSession("bot:tokensecret", "", "", "")
 		req, _ := http.NewRequest(http.MethodPost, "https://x.com/p", nil)
 		c.signRequest(req, body)
@@ -183,7 +189,7 @@ func TestDoPost(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL })
+	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
 	c.store.SetSession("mytoken", "", "", "")
 	data, err := c.doPost(context.Background(), "/ilink/bot/x", map[string]int{"k": 1}, time.Second)
 	if err != nil {
@@ -208,7 +214,7 @@ func TestDoPost_StatusErrors(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte("nope"))
 		}))
-		c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL })
+		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
 		_, err := c.doPost(context.Background(), "p", struct{}{}, time.Second)
 		srv.Close()
 		if err == nil {
@@ -250,7 +256,7 @@ func TestGetUpdates(t *testing.T) {
 		_, _ = w.Write([]byte(`{"get_updates_buf":"nb","msgs":[{"from_user_id":"u","message_id":3}]}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL; cfg.Poll.HTTPTimeoutSeconds = 5 })
+	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL; cfg.WeChat.Poll.HTTPTimeoutSeconds = 5 })
 
 	resp, err := c.getUpdates(context.Background(), "oldbuf", time.Second)
 	if err != nil {
@@ -278,7 +284,7 @@ func TestGetUpdates_InvalidJSON(t *testing.T) {
 		_, _ = w.Write([]byte("not json"))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL })
+	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
 	if _, err := c.getUpdates(context.Background(), "", time.Second); err == nil {
 		t.Error("expected parse error")
 	}
@@ -293,7 +299,7 @@ func TestSendText(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL })
+	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
 
 	if err := c.sendText(context.Background(), "user1", "pong", "ctx"); err != nil {
 		t.Fatal(err)
@@ -317,7 +323,7 @@ func TestHandleMessage_SkipsWithoutTyping(t *testing.T) {
 		if !c.handleMessage(ctx, &WeixinMessage{MessageType: msgTypeBot, FromUserID: "u", MessageID: 1, ItemList: textMsg("x")}) {
 			t.Error("want true")
 		}
-		if c.store.IsAcked(1) {
+		if c.acked.Has("1") {
 			t.Error("non-user message should not be acked")
 		}
 	})
@@ -331,7 +337,7 @@ func TestHandleMessage_SkipsWithoutTyping(t *testing.T) {
 
 	t.Run("already acked", func(t *testing.T) {
 		c := newTestClient(t, nil)
-		c.store.MarkAcked(9, 10)
+		c.acked.Add("9")
 		if !c.handleMessage(ctx, &WeixinMessage{MessageType: msgTypeUser, FromUserID: "u", MessageID: 9, ContextToken: "ct", ItemList: textMsg("x")}) {
 			t.Error("want true")
 		}
@@ -346,7 +352,7 @@ func TestHandleMessage_SkipsWithoutTyping(t *testing.T) {
 		if !c.handleMessage(ctx, msg) {
 			t.Error("want true")
 		}
-		if !c.store.IsAcked(4) {
+		if !c.acked.Has("4") {
 			t.Error("Seq should be used as key when MessageID is 0")
 		}
 		if c.store.ContextTokens["u"] != "ct" {
@@ -355,11 +361,11 @@ func TestHandleMessage_SkipsWithoutTyping(t *testing.T) {
 	})
 
 	t.Run("sender not in whitelist", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.Filter.AllowedSenders = []string{"vip"} })
+		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.AllowedSenders = []string{"vip"} })
 		if !c.handleMessage(ctx, &WeixinMessage{MessageType: msgTypeUser, FromUserID: "other", MessageID: 2, ItemList: textMsg("x")}) {
 			t.Error("want true")
 		}
-		if !c.store.IsAcked(2) {
+		if !c.acked.Has("2") {
 			t.Error("ignored message should be acked")
 		}
 	})
@@ -382,9 +388,9 @@ func TestPollLoop_SessionExpiredAndErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 			c := newTestClient(t, func(cfg *config.Config) {
-				cfg.BaseURL = srv.URL
-				cfg.Poll.TimeoutSeconds = 1
-				cfg.Poll.HTTPTimeoutSeconds = 5
+				cfg.WeChat.BaseURL = srv.URL
+				cfg.WeChat.Poll.TimeoutSeconds = 1
+				cfg.WeChat.Poll.HTTPTimeoutSeconds = 5
 			})
 			healthy := false
 			err := c.pollLoop(context.Background(), func() { healthy = true })
@@ -411,9 +417,9 @@ func TestPollLoop_AdvancesCursorAndPersists(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(t, func(cfg *config.Config) {
-		cfg.BaseURL = srv.URL
-		cfg.Poll.TimeoutSeconds = 1
-		cfg.Poll.HTTPTimeoutSeconds = 5
+		cfg.WeChat.BaseURL = srv.URL
+		cfg.WeChat.Poll.TimeoutSeconds = 1
+		cfg.WeChat.Poll.HTTPTimeoutSeconds = 5
 	})
 
 	healthy := 0
@@ -457,8 +463,8 @@ func TestHandleMessage_Delivers(t *testing.T) {
 	if !c.handleMessage(context.Background(), userMsg(1, "hello")) {
 		t.Fatal("want true")
 	}
-	if len(rec.msgs) != 1 || rec.msgs[0].Text != "hello" || rec.msgs[0].From != "u" || !c.store.IsAcked(1) {
-		t.Errorf("msgs=%v acked=%v", rec.msgs, c.store.IsAcked(1))
+	if len(rec.msgs) != 1 || rec.msgs[0].Text != "hello" || rec.msgs[0].From != "u" || !c.acked.Has("1") {
+		t.Errorf("msgs=%v acked=%v", rec.msgs, c.acked.Has("1"))
 	}
 }
 
@@ -468,7 +474,7 @@ func TestHandleMessage_DeliverFailureKeepsCursor(t *testing.T) {
 	if c.handleMessage(context.Background(), userMsg(1, "hello")) {
 		t.Error("want false so the batch is retried")
 	}
-	if c.store.IsAcked(1) {
+	if c.acked.Has("1") {
 		t.Error("failed message must not be acked")
 	}
 }
@@ -479,7 +485,7 @@ func TestHandleMessage_DiscardedIsAcked(t *testing.T) {
 	if !c.handleMessage(context.Background(), userMsg(1, "hello")) {
 		t.Error("want true so the poll loop does not retry forever")
 	}
-	if !c.store.IsAcked(1) {
+	if !c.acked.Has("1") {
 		t.Error("discarded message should be acked")
 	}
 }
@@ -491,7 +497,7 @@ func TestHandleMessage_SendsReplyAfterDelivery(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL; cfg.Ack.ReplyText = " 收到 " })
+	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL; cfg.Ack.ReplyText = " 收到 " })
 	c.handle = (&recorder{}).handle
 	if !c.handleMessage(context.Background(), userMsg(1, "hello")) {
 		t.Fatal("want true")
@@ -528,7 +534,7 @@ func TestHandleMessage_NonTextIsLoggedOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 	var logBuf strings.Builder
-	c := newTestClient(t, func(cfg *config.Config) { cfg.BaseURL = srv.URL; cfg.Ack.ReplyText = "收到" })
+	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL; cfg.Ack.ReplyText = "收到" })
 	c.logger = log.New(&logBuf, "", 0)
 	rec := &recorder{}
 	c.handle = rec.handle
@@ -540,7 +546,7 @@ func TestHandleMessage_NonTextIsLoggedOnly(t *testing.T) {
 	if len(rec.msgs) != 0 || replies != 0 {
 		t.Errorf("non-text message must not be delivered or replied: delivered=%d replies=%d", len(rec.msgs), replies)
 	}
-	if !c.store.IsAcked(7) {
+	if !c.acked.Has("7") {
 		t.Error("non-text message should be acked")
 	}
 	if out := logBuf.String(); !strings.Contains(out, "忽略语音消息") || !strings.Contains(out, "暂只支持文字消息") {

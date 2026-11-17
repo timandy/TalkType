@@ -18,7 +18,7 @@ func newStore(t *testing.T) *TokenStore {
 
 func TestLoad_MissingFileReturnsEmptyStore(t *testing.T) {
 	s := newStore(t)
-	if s.Token() != "" || s.ContextTokens == nil || len(s.AckedIDs) != 0 {
+	if s.Token() != "" || s.ContextTokens == nil {
 		t.Errorf("unexpected state: %+v", s)
 	}
 }
@@ -53,7 +53,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	s.SetSession("tok", "bot", "user", "https://base")
 	s.SetBuf("buf1")
 	s.SetContextToken("u1", "ctx1")
-	s.MarkAcked(7, 10)
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +67,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if got.Token() != "tok" || got.BotID != "bot" || got.UserID != "user" || got.Base() != "https://base" {
 		t.Errorf("session mismatch: %+v", got)
 	}
-	if got.Buf() != "buf1" || got.ContextTokens["u1"] != "ctx1" || !got.IsAcked(7) {
+	if got.Buf() != "buf1" || got.ContextTokens["u1"] != "ctx1" {
 		t.Errorf("state mismatch: %+v", got)
 	}
 }
@@ -82,60 +81,14 @@ func TestSetContextToken_IgnoresEmpty(t *testing.T) {
 	}
 }
 
-func TestMarkAcked(t *testing.T) {
-	s := newStore(t)
-	s.MarkAcked(0, 5) // 忽略 0
-	if len(s.AckedIDs) != 0 {
-		t.Fatalf("0 should be ignored: %v", s.AckedIDs)
-	}
-	s.MarkAcked(1, 5)
-	s.MarkAcked(1, 5) // 去重
-	if len(s.AckedIDs) != 1 {
-		t.Fatalf("duplicate recorded: %v", s.AckedIDs)
-	}
-	if !s.IsAcked(1) || s.IsAcked(2) {
-		t.Error("IsAcked wrong")
-	}
-}
-
-func TestMarkAcked_TrimsToLimit(t *testing.T) {
-	s := newStore(t)
-	for i := int64(1); i <= 5; i++ {
-		s.MarkAcked(i, 3)
-	}
-	want := []int64{3, 4, 5}
-	if len(s.AckedIDs) != len(want) {
-		t.Fatalf("AckedIDs = %v", s.AckedIDs)
-	}
-	for i, v := range want {
-		if s.AckedIDs[i] != v {
-			t.Fatalf("AckedIDs = %v, want %v", s.AckedIDs, want)
-		}
-	}
-	if s.IsAcked(1) {
-		t.Error("oldest id should be evicted")
-	}
-}
-
-func TestMarkAcked_NonPositiveLimitUsesDefault(t *testing.T) {
-	s := newStore(t)
-	for i := int64(1); i <= defaultAckCap+10; i++ {
-		s.MarkAcked(i, 0)
-	}
-	if len(s.AckedIDs) != defaultAckCap {
-		t.Errorf("len = %d, want %d", len(s.AckedIDs), defaultAckCap)
-	}
-}
-
 func TestReset(t *testing.T) {
 	s := newStore(t)
 	s.SetSession("tok", "b", "u", "base")
 	s.SetBuf("x")
 	s.SetContextToken("u", "c")
-	s.MarkAcked(1, 5)
 	s.Reset()
 	if s.Token() != "" || s.Base() != "" || s.Buf() != "" || s.BotID != "" || s.UserID != "" ||
-		len(s.ContextTokens) != 0 || s.ContextTokens == nil || len(s.AckedIDs) != 0 {
+		len(s.ContextTokens) != 0 || s.ContextTokens == nil {
 		t.Errorf("not reset: %+v", s)
 	}
 }
@@ -168,16 +121,14 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(i int64) {
 			defer wg.Done()
-			s.MarkAcked(i, 100)
 			s.SetBuf("b")
 			s.SetContextToken("u", "c")
-			_ = s.IsAcked(i)
 			_ = s.Buf()
 			_ = s.Save()
 		}(int64(i))
 	}
 	wg.Wait()
-	if len(s.AckedIDs) != 20 {
-		t.Errorf("len = %d", len(s.AckedIDs))
+	if s.Buf() != "b" || s.ContextTokens["u"] != "c" {
+		t.Errorf("state = %+v", s)
 	}
 }

@@ -7,10 +7,15 @@
 *.dylib
 *.test
 
-# 运行期凭证与状态（含 bot_token，切勿提交）
-/token.json
+# 运行期凭证与状态（含 bot_token、App Secret，切勿提交）；token.json 是旧版的微信凭证文件名
+wechat_token.json
+wechat_token.json.tmp
 token.json
 token.json.tmp
+feishu_token.json
+feishu_token.json.tmp
+*_acked.ids
+*_acked.ids.tmp
 
 # 打包产物
 /*.zip

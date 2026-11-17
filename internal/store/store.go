@@ -1,4 +1,4 @@
-// Package store 负责 bot_token、长轮询游标、context_token 与 ACK 记录的持久化。
+// Package store 负责凭证、游标、context_token 与已处理消息 ID 的持久化。
 package store
 
 import (
@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 )
 
@@ -23,8 +22,7 @@ type TokenStore struct {
 	UserID        string            `json:"user_id"`
 	BaseURL       string            `json:"base_url"`
 	GetUpdatesBuf string            `json:"get_updates_buf"`
-	ContextTokens map[string]string `json:"context_tokens"`
-	AckedIDs      []int64           `json:"acked_ids"`
+	ContextTokens map[string]string `json:"context_tokens"`
 }
 
 // Load 读取凭证文件；文件不存在时返回空存储。
@@ -57,18 +55,7 @@ func (s *TokenStore) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return writeAtomic(s.path, data)
 }
 
 func (s *TokenStore) Token() string {
@@ -114,38 +101,6 @@ func (s *TokenStore) SetContextToken(userID, token string) {
 	s.mu.Unlock()
 }
 
-func (s *TokenStore) IsAcked(id int64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, v := range s.AckedIDs {
-		if v == id {
-			return true
-		}
-	}
-	return false
-}
-
-// MarkAcked 记录已处理的消息 ID，并按 limit 保留最近的记录。
-func (s *TokenStore) MarkAcked(id int64, limit int) {
-	if id == 0 {
-		return
-	}
-	if limit <= 0 {
-		limit = defaultAckCap
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range s.AckedIDs {
-		if v == id {
-			return
-		}
-	}
-	s.AckedIDs = append(s.AckedIDs, id)
-	if len(s.AckedIDs) > limit {
-		s.AckedIDs = append([]int64(nil), s.AckedIDs[len(s.AckedIDs)-limit:]...)
-	}
-}
-
 // Reset 清空内存中的会话状态。
 func (s *TokenStore) Reset() {
 	s.mu.Lock()
@@ -155,8 +110,7 @@ func (s *TokenStore) Reset() {
 	s.UserID = ""
 	s.BaseURL = ""
 	s.GetUpdatesBuf = ""
-	s.ContextTokens = make(map[string]string)
-	s.AckedIDs = nil
+	s.ContextTokens = make(map[string]string)
 }
 
 // Delete 清空状态并删除凭证文件，用于会话过期后的重新登录。

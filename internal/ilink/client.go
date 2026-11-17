@@ -43,24 +43,25 @@ var ErrSessionExpired = errors.New("ilink 会话已过期")
 type Client struct {
 	cfg        *config.Config
 	store      *store.TokenStore
+	acked      *store.AckedIDs
 	logger     *log.Logger
 	httpClient *http.Client
 	handle     relay.Handler
 }
 
-// NewClient 创建 iLink 客户端。
-func NewClient(cfg *config.Config, st *store.TokenStore, logger *log.Logger) *Client {
+// NewClient 创建 iLink 客户端。acked 记录已处理的消息 ID，用于游标重放时去重。
+func NewClient(cfg *config.Config, st *store.TokenStore, acked *store.AckedIDs, logger *log.Logger) *Client {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Client{cfg: cfg, store: st, logger: logger, httpClient: &http.Client{}}
+	return &Client{cfg: cfg, store: st, acked: acked, logger: logger, httpClient: &http.Client{}}
 }
 
 func (c *Client) baseURL() string {
 	if b := c.store.Base(); b != "" {
 		return strings.TrimRight(b, "/")
 	}
-	return strings.TrimRight(c.cfg.BaseURL, "/")
+	return strings.TrimRight(c.cfg.WeChat.BaseURL, "/")
 }
 
 func (c *Client) doPost(ctx context.Context, endpoint string, payload any, timeout time.Duration) ([]byte, error) {
@@ -133,10 +134,10 @@ func (c *Client) doGet(ctx context.Context, rawURL string, out any, timeout time
 //	canonical = METHOD \n PATH \n TIMESTAMP \n NONCE \n SHA256(body)
 //	signature = "v1=" + base64(HMAC-SHA256(secret, canonical))
 func (c *Client) signRequest(req *http.Request, body []byte) {
-	if !c.cfg.Signature.Enabled {
+	if !c.cfg.WeChat.Signature.Enabled {
 		return
 	}
-	secret := strings.TrimSpace(c.cfg.Signature.Secret)
+	secret := strings.TrimSpace(c.cfg.WeChat.Signature.Secret)
 	if secret == "" {
 		secret = tokenSecret(c.store.Token())
 	}
@@ -173,8 +174,8 @@ func tokenSecret(token string) string {
 // ---------------------------------------------------------------------------
 
 func (c *Client) login(ctx context.Context) error {
-	loginBase := strings.TrimRight(c.cfg.BaseURL, "/")
-	interval := time.Duration(c.cfg.Login.PollIntervalMS) * time.Millisecond
+	loginBase := strings.TrimRight(c.cfg.WeChat.BaseURL, "/")
+	interval := time.Duration(c.cfg.WeChat.QRPollIntervalMS) * time.Millisecond
 
 outer:
 	for {
@@ -183,7 +184,7 @@ outer:
 		}
 
 		var qr QRCodeResponse
-		qrURL := loginBase + "/ilink/bot/get_bot_qrcode?bot_type=" + url.QueryEscape(c.cfg.BotType)
+		qrURL := loginBase + "/ilink/bot/get_bot_qrcode?bot_type=" + url.QueryEscape(c.cfg.WeChat.BotType)
 		if err := c.doGet(ctx, qrURL, &qr, 20*time.Second); err != nil {
 			return fmt.Errorf("获取登录二维码失败: %w", err)
 		}
@@ -307,7 +308,7 @@ func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
 }
 
 func (c *Client) pollLoop(ctx context.Context, onHealthy func()) error {
-	pollTimeout := time.Duration(c.cfg.Poll.TimeoutSeconds) * time.Second
+	pollTimeout := time.Duration(c.cfg.WeChat.Poll.TimeoutSeconds) * time.Second
 
 	for {
 		resp, err := c.getUpdates(ctx, c.store.Buf(), pollTimeout)
@@ -352,13 +353,13 @@ func (c *Client) pollLoop(ctx context.Context, onHealthy func()) error {
 }
 
 func (c *Client) getUpdates(ctx context.Context, buf string, pollTimeout time.Duration) (*GetUpdatesResp, error) {
-	httpTimeout := time.Duration(c.cfg.Poll.HTTPTimeoutSeconds) * time.Second
+	httpTimeout := time.Duration(c.cfg.WeChat.Poll.HTTPTimeoutSeconds) * time.Second
 	if httpTimeout <= pollTimeout {
 		httpTimeout = pollTimeout + 10*time.Second
 	}
 	req := GetUpdatesReq{
 		GetUpdatesBuf: buf,
-		BaseInfo:      &BaseInfo{ChannelVersion: c.cfg.ChannelVersion},
+		BaseInfo:      &BaseInfo{ChannelVersion: c.cfg.WeChat.ChannelVersion},
 	}
 	data, err := c.doPost(ctx, "ilink/bot/getupdates", req, httpTimeout)
 	if err != nil {
@@ -388,7 +389,7 @@ func (c *Client) handleMessage(ctx context.Context, msg *WeixinMessage) bool {
 	if key == 0 {
 		key = msg.Seq
 	}
-	if key != 0 && c.store.IsAcked(key) {
+	if key != 0 && c.acked.Has(strconv.FormatInt(key, 10)) {
 		return true
 	}
 
@@ -435,11 +436,13 @@ func (c *Client) markAcked(key int64) {
 	if key == 0 {
 		return
 	}
-	c.store.MarkAcked(key, c.cfg.Ack.MaxAckedIDs)
+	if err := c.acked.Add(strconv.FormatInt(key, 10)); err != nil {
+		c.logger.Printf("保存已处理消息记录失败: %v", err)
+	}
 }
 
 func (c *Client) senderAllowed(userID string) bool {
-	allowed := c.cfg.Filter.AllowedSenders
+	allowed := c.cfg.WeChat.AllowedSenders
 	if len(allowed) == 0 {
 		return true
 	}
@@ -464,7 +467,7 @@ func (c *Client) sendText(ctx context.Context, to, text, contextToken string) er
 				TextItem: &TextItem{Text: text},
 			}},
 		},
-		BaseInfo: &BaseInfo{ChannelVersion: c.cfg.ChannelVersion},
+		BaseInfo: &BaseInfo{ChannelVersion: c.cfg.WeChat.ChannelVersion},
 	}
 	_, err := c.doPost(ctx, "ilink/bot/sendmessage", req, 15*time.Second)
 	return err

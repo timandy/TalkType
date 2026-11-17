@@ -3,6 +3,7 @@
 //
 // 消息来源可替换：
 //   - wechat（默认）：通过官方 iLink Bot API 扫码登录、长轮询接收微信消息，替代 OpenClaw 的微信渠道；
+//   - feishu：扫码创建飞书机器人，通过长连接接收机器人单聊里的消息；
 //   - console：调试用，从本程序的控制台逐行读取输入。
 //
 // 程序仅依赖 Windows win32 API，只能在 Windows 上运行。
@@ -23,6 +24,7 @@ import (
 
 	"wetype/internal/config"
 	"wetype/internal/console"
+	"wetype/internal/feishu"
 	"wetype/internal/ilink"
 	"wetype/internal/relay"
 	"wetype/internal/store"
@@ -31,6 +33,12 @@ import (
 )
 
 const consoleCursorDelay = 3 * time.Second
+
+// 已处理消息 ID 的记录文件，与凭证文件放在同一目录，一行一个 ID。
+const (
+	wechatAckedFile = "wechat_acked.ids"
+	feishuAckedFile = "feishu_acked.ids"
+)
 
 var logger = log.New(os.Stdout, "[wetype] ", log.LstdFlags)
 
@@ -46,8 +54,8 @@ func main() {
 	wintype.SetupConsole()
 
 	configPath := flag.String("config", "config.json", "配置文件路径")
-	sourceName := flag.String("source", "wechat", "消息来源：wechat（微信）或 console（调试用，从本窗口逐行输入）")
-	relogin := flag.Bool("relogin", false, "清除本地凭证并强制重新扫码登录（仅 wechat）")
+	sourceName := flag.String("source", "", "临时覆盖 config.json 的 source：wechat（微信）、feishu（飞书）或 console（调试用，从本窗口逐行输入），不区分大小写")
+	relogin := flag.Bool("relogin", false, "清除本地凭证并强制重新扫码登录（wechat、feishu）")
 	lock := flag.Bool("lock", false, "在目标终端中运行：通知正在运行的本程序实例锁定该终端")
 	unlock := flag.Bool("unlock", false, "通知正在运行的本程序实例解除锁定")
 	flag.Parse()
@@ -59,6 +67,9 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Fatalf("加载配置失败: %v", err)
+	}
+	if *sourceName != "" {
+		cfg.Source = *sourceName
 	}
 	if err := cfg.Validate(); err != nil {
 		logger.Fatalf("配置不合法: %v", err)
@@ -80,13 +91,13 @@ func main() {
 	}
 
 	var src relay.Source
-	switch strings.ToLower(strings.TrimSpace(*sourceName)) {
-	case "wechat":
+	switch cfg.Source {
+	case config.SourceWeChat:
 		src, err = newWeChatSource(cfg, *configPath, *relogin)
-	case "console":
+	case config.SourceFeishu:
+		src, err = newFeishuSource(cfg, *configPath, *relogin)
+	case config.SourceConsole:
 		src = console.New(os.Stdin, logger, console.Options{CursorDelay: consoleCursorDelay, ToCursor: toCursor})
-	default:
-		err = fmt.Errorf("未知的消息来源 %q，可选 wechat 或 console", *sourceName)
 	}
 	if err != nil {
 		logger.Fatal(err)
@@ -111,10 +122,7 @@ func injectOptions(cfg *config.Config) wintype.Options {
 
 // newWeChatSource 加载凭证并创建微信来源。
 func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*ilink.Client, error) {
-	tokenPath := cfg.TokenFile
-	if !filepath.IsAbs(tokenPath) {
-		tokenPath = filepath.Join(filepath.Dir(absPath(configPath)), tokenPath)
-	}
+	tokenPath := resolvePath(configPath, cfg.WeChat.TokenFile)
 
 	st, err := store.Load(tokenPath)
 	if err != nil {
@@ -126,15 +134,53 @@ func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*ilin
 		}
 		logger.Println("已清除本地凭证，将重新扫码登录")
 	}
-	if st.Token() == "" && strings.TrimSpace(cfg.Token) != "" {
-		st.SetSession(strings.TrimSpace(cfg.Token), "", "", "")
+	if st.Token() == "" && strings.TrimSpace(cfg.WeChat.Token) != "" {
+		st.SetSession(strings.TrimSpace(cfg.WeChat.Token), "", "", "")
 		if err := st.Save(); err != nil {
-			logger.Printf("保存 config.token 失败: %v", err)
+			logger.Printf("保存 wechat.token 失败: %v", err)
 		}
+	}
+	acked, err := store.LoadAckedIDs(filepath.Join(filepath.Dir(tokenPath), wechatAckedFile), cfg.Ack.MaxAckedIDs)
+	if err != nil {
+		return nil, fmt.Errorf("加载已处理消息记录失败: %w", err)
 	}
 	logger.Printf("凭证文件: %s", tokenPath)
 	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
-	return ilink.NewClient(cfg, st, logger), nil
+	return ilink.NewClient(cfg, st, acked, logger), nil
+}
+
+// newFeishuSource 加载凭证并创建飞书来源。
+func newFeishuSource(cfg *config.Config, configPath string, relogin bool) (*feishu.Client, error) {
+	tokenPath := resolvePath(configPath, cfg.Feishu.TokenFile)
+	st, err := store.LoadFeishu(tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("加载飞书凭证失败: %w", err)
+	}
+	if relogin {
+		if err := st.Delete(); err != nil {
+			logger.Printf("清除飞书凭证失败: %v", err)
+		}
+		if cfg.Feishu.AppID != "" {
+			logger.Println("已清除本地飞书凭证；config.json 中填写了 feishu.app_id，将继续使用它，不会扫码")
+		} else {
+			logger.Println("已清除本地飞书凭证，将重新扫码创建机器人")
+		}
+	}
+	acked, err := store.LoadAckedIDs(filepath.Join(filepath.Dir(tokenPath), feishuAckedFile), cfg.Ack.MaxAckedIDs)
+	if err != nil {
+		return nil, fmt.Errorf("加载已处理消息记录失败: %w", err)
+	}
+	logger.Printf("飞书凭证文件: %s", tokenPath)
+	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
+	return feishu.NewClient(cfg, st, acked, logger), nil
+}
+
+// resolvePath 把相对路径解析为相对配置文件所在目录。
+func resolvePath(configPath, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(filepath.Dir(absPath(configPath)), p)
 }
 
 // runLockCommand 处理 -lock / -unlock：通知正在运行的实例，然后退出。

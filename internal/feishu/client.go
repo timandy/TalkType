@@ -1,0 +1,646 @@
+// Package feishu 是飞书消息来源：扫码创建机器人（或使用手动填写的凭证），
+// 通过长连接（WebSocket）接收机器人单聊里的文本消息，键入成功后确认，并可选回一条回执。
+//
+// 不依赖飞书 SDK：WebSocket 客户端和帧编解码都在本包里手写。
+package feishu
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"wetype/internal/config"
+	"wetype/internal/relay"
+	"wetype/internal/store"
+)
+
+const (
+	defaultPingInterval = 120 * time.Second
+	livenessGrace       = 60 * time.Second // 超过“心跳间隔 + 该值”没有收到任何帧，判定连接已死
+	fragmentTTL         = time.Minute      // 分片超过该时间仍未收齐则丢弃
+
+	eventMessageReceive = "im.message.receive_v1"
+)
+
+// 长连接地址接口的错误码（取自官方 SDK）。
+const (
+	codeOK            = 0
+	codeSystemBusy    = 1
+	codeAuthFailed    = 514
+	codeInternalError = 1000040343
+	codeAppIDInvalid  = 1000040346
+)
+
+// errBadCredentials 表示 app_id / app_secret 无效。
+var errBadCredentials = errors.New("飞书应用凭证无效")
+
+// Client 是飞书消息来源，实现 relay.Source。
+type Client struct {
+	cfg        *config.Config
+	store      *store.FeishuStore
+	acked      *store.AckedIDs
+	logger     *log.Logger
+	httpClient *http.Client
+	wsRT       http.RoundTripper
+
+	// 测试时替换为本地服务器地址。
+	accountsBase func(domain string) string
+	openBase     func(domain string) string
+	sleep        func(ctx context.Context, d time.Duration) error
+
+	handle relay.Handler
+
+	// 当前使用的凭证。
+	appID, appSecret, domain, owner string
+	fromConfig                      bool
+
+	tokenMu     sync.Mutex
+	tenantToken string
+	tokenExpiry time.Time
+
+	fragments map[string]*partialEvent
+}
+
+type partialEvent struct {
+	parts   [][]byte
+	got     int
+	created time.Time
+}
+
+// NewClient 创建飞书来源。acked 记录已处理的消息 ID，用于飞书重推时去重。
+func NewClient(cfg *config.Config, st *store.FeishuStore, acked *store.AckedIDs, logger *log.Logger) *Client {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &Client{
+		cfg:          cfg,
+		store:        st,
+		acked:        acked,
+		logger:       logger,
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		wsRT:         newWSTransport(),
+		accountsBase: defaultAccountsBase,
+		openBase:     defaultOpenBase,
+		sleep:        sleepCtx,
+		fragments:    make(map[string]*partialEvent),
+	}
+}
+
+func defaultAccountsBase(domain string) string {
+	if domain == config.LarkDomain {
+		return "https://accounts.larksuite.com"
+	}
+	return "https://accounts.feishu.cn"
+}
+
+func defaultOpenBase(domain string) string {
+	if domain == config.LarkDomain {
+		return "https://open.larksuite.com"
+	}
+	return "https://open.feishu.cn"
+}
+
+var _ relay.Source = (*Client)(nil)
+
+// Name 实现 relay.Source。
+func (c *Client) Name() string { return "飞书" }
+
+// Run 实现 relay.Source：准备好凭证后保持长连接，断开时按退避策略重连。
+func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
+	c.handle = handle
+	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
+	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
+	backoff := minDelay
+
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if c.appID == "" {
+			if err := c.loadCredentials(ctx); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				if errors.Is(err, errScanUnavailable) {
+					return fmt.Errorf("%w，请在 config.json 的 feishu.app_id 和 feishu.app_secret 中手动填写飞书应用凭证", err)
+				}
+				c.logger.Printf("登录失败: %v，%s 后重试", err, backoff)
+				_ = c.sleep(ctx, backoff+jitter(backoff))
+				backoff = nextBackoff(backoff, maxDelay)
+				continue
+			}
+			backoff = minDelay
+		}
+
+		err := c.session(ctx, func() { backoff = minDelay })
+		if ctx.Err() != nil {
+			return nil
+		}
+		if errors.Is(err, errBadCredentials) {
+			if c.fromConfig {
+				return fmt.Errorf("config.json 中的 feishu.app_id / feishu.app_secret 无效: %w", err)
+			}
+			c.logger.Printf("%v，清除本地凭证并重新扫码", err)
+			c.store.ClearCredentials()
+			if err := c.store.Save(); err != nil {
+				c.logger.Printf("保存凭证文件失败: %v", err)
+			}
+			c.appID = ""
+			backoff = minDelay
+			continue
+		}
+		c.logger.Printf("飞书长连接中断: %v，%s 后重连", err, backoff)
+		_ = c.sleep(ctx, backoff+jitter(backoff))
+		backoff = nextBackoff(backoff, maxDelay)
+	}
+}
+
+// loadCredentials 依次使用 config.json 中的凭证、凭证文件中保存的凭证，都没有时扫码创建。
+func (c *Client) loadCredentials(ctx context.Context) error {
+	// 换了应用就不能再用旧应用的访问凭证发回执。
+	c.tokenMu.Lock()
+	c.tenantToken, c.tokenExpiry = "", time.Time{}
+	c.tokenMu.Unlock()
+
+	if c.cfg.Feishu.AppID != "" {
+		c.appID, c.appSecret, c.domain = c.cfg.Feishu.AppID, c.cfg.Feishu.AppSecret, c.cfg.Feishu.Domain
+		c.owner, c.fromConfig = "", true
+		c.logger.Printf("使用 config.json 中的飞书应用凭证 app_id=%s", c.appID)
+		if len(c.cfg.Feishu.AllowedSenders) == 0 {
+			c.logger.Println("警告：未配置 feishu.allowed_senders，任何能私聊该机器人的人都可以向本机键入文字；" +
+				"建议把自己的 open_id 填入白名单（收到消息时日志里的 from= 就是 open_id）")
+		}
+		return nil
+	}
+	if id, secret, domain, owner := c.store.Credentials(); id != "" && secret != "" {
+		if domain == "" {
+			domain = c.cfg.Feishu.Domain
+		}
+		c.appID, c.appSecret, c.domain, c.owner, c.fromConfig = id, secret, domain, owner, false
+		if owner == "" && len(c.cfg.Feishu.AllowedSenders) == 0 {
+			c.logger.Println("警告：凭证文件中没有扫码人的 open_id，且未配置 feishu.allowed_senders，将接受任何人的消息")
+		}
+		return nil
+	}
+	res, err := c.scan(ctx)
+	if err != nil {
+		return err
+	}
+	c.store.SetCredentials(res.AppID, res.AppSecret, res.Domain, res.OpenID)
+	if err := c.store.Save(); err != nil {
+		return fmt.Errorf("保存飞书凭证失败: %w", err)
+	}
+	c.appID, c.appSecret, c.domain, c.owner, c.fromConfig = res.AppID, res.AppSecret, res.Domain, res.OpenID, false
+	c.logger.Printf("扫码成功，已创建机器人 app_id=%s，凭证已保存到 %s", res.AppID, c.store.Path())
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// 长连接
+// ---------------------------------------------------------------------------
+
+type endpointResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		URL          string `json:"URL"`
+		ClientConfig struct {
+			PingInterval int `json:"PingInterval"`
+		} `json:"ClientConfig"`
+	} `json:"data"`
+}
+
+// endpoint 获取长连接地址和心跳间隔。
+func (c *Client) endpoint(ctx context.Context) (string, time.Duration, error) {
+	body, _ := json.Marshal(map[string]string{"AppID": c.appID, "AppSecret": c.appSecret})
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.openBase(c.domain)+"/callback/ws/endpoint", bytes.NewReader(body))
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("locale", "zh")
+	var r endpointResp
+	if err := c.doJSON(req, &r); err != nil {
+		return "", 0, fmt.Errorf("获取长连接地址失败: %w", err)
+	}
+	switch r.Code {
+	case codeOK:
+	case codeAuthFailed, codeAppIDInvalid:
+		return "", 0, fmt.Errorf("%w: code=%d %s", errBadCredentials, r.Code, r.Msg)
+	default:
+		return "", 0, fmt.Errorf("获取长连接地址失败: code=%d %s", r.Code, r.Msg)
+	}
+	if r.Data.URL == "" {
+		return "", 0, errors.New("获取长连接地址失败：响应中没有地址")
+	}
+	ping := time.Duration(r.Data.ClientConfig.PingInterval) * time.Second
+	if ping <= 0 {
+		ping = defaultPingInterval
+	}
+	return r.Data.URL, ping, nil
+}
+
+// session 建立一次长连接并持续读取，直到连接断开或 ctx 结束。
+func (c *Client) session(ctx context.Context, onHealthy func()) error {
+	wsURL, pingInterval, err := c.endpoint(ctx)
+	if err != nil {
+		return err
+	}
+	serviceID := int32(0)
+	if u, err := url.Parse(wsURL); err == nil {
+		if v, err := strconv.ParseInt(u.Query().Get("service_id"), 10, 32); err == nil {
+			serviceID = int32(v)
+		}
+	}
+
+	conn, err := dialWS(ctx, c.wsRT, wsURL)
+	if err != nil {
+		return err
+	}
+	sessCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer conn.Close()
+	go func() {
+		<-sessCtx.Done()
+		conn.Close()
+	}()
+
+	c.logger.Println("飞书长连接已建立，等待消息（只处理机器人单聊）")
+	onHealthy()
+
+	var lastRecv atomic.Int64
+	lastRecv.Store(time.Now().UnixNano())
+	var ping atomic.Int64
+	ping.Store(int64(pingInterval))
+	var dead atomic.Bool
+	go c.pingLoop(sessCtx, conn, serviceID, &ping, &lastRecv, &dead)
+
+	for {
+		op, data, err := conn.ReadMessage()
+		if err != nil {
+			if dead.Load() {
+				return errors.New("长时间没有收到飞书的心跳回应")
+			}
+			return err
+		}
+		lastRecv.Store(time.Now().UnixNano())
+		if op != opBinary {
+			continue
+		}
+		f, err := decodeFrame(data)
+		if err != nil {
+			c.logger.Printf("解析飞书帧失败: %v", err)
+			continue
+		}
+		switch f.Method {
+		case methodControl:
+			c.handleControl(f, &ping)
+		case methodData:
+			c.handleData(ctx, conn, f)
+		}
+	}
+}
+
+// pingLoop 定时发送心跳，并在长时间收不到任何帧时关闭连接触发重连（dead 记录原因）。
+func (c *Client) pingLoop(ctx context.Context, conn *wsConn, serviceID int32, ping, lastRecv *atomic.Int64, dead *atomic.Bool) {
+	for {
+		interval := time.Duration(ping.Load())
+		if err := sleepCtx(ctx, interval); err != nil {
+			return
+		}
+		if time.Since(time.Unix(0, lastRecv.Load())) > interval+livenessGrace {
+			dead.Store(true)
+			conn.Close()
+			return
+		}
+		f := &frame{Service: serviceID, Method: methodControl, Headers: []header{{headerType, typePing}}}
+		if err := conn.WriteBinary(f.encode()); err != nil {
+			conn.Close()
+			return
+		}
+	}
+}
+
+// handleControl 处理 pong：服务端可能在 payload 里下发新的心跳间隔。
+func (c *Client) handleControl(f *frame, ping *atomic.Int64) {
+	if f.header(headerType) != typePong || len(f.Payload) == 0 {
+		return
+	}
+	var cfg struct {
+		PingInterval int `json:"PingInterval"`
+	}
+	if json.Unmarshal(f.Payload, &cfg) == nil && cfg.PingInterval > 0 {
+		ping.Store(int64(time.Duration(cfg.PingInterval) * time.Second))
+	}
+}
+
+// handleData 收齐分片后处理事件，并把处理结果回给飞书。
+func (c *Client) handleData(ctx context.Context, conn *wsConn, f *frame) {
+	if f.header(headerType) != typeEvent {
+		return
+	}
+	payload, ok := c.mergeFragments(f)
+	if !ok {
+		return
+	}
+	start := time.Now()
+	code := c.processEvent(ctx, payload)
+
+	resp := *f
+	resp.Headers = append(append([]header(nil), f.Headers...), header{headerBizRT, strconv.FormatInt(time.Since(start).Milliseconds(), 10)})
+	resp.Payload, _ = json.Marshal(map[string]int{"code": code})
+	if err := conn.WriteBinary(resp.encode()); err != nil {
+		c.logger.Printf("回复飞书事件确认失败: %v", err)
+	}
+}
+
+// mergeFragments 按 message_id 收集分片（sum 片，seq 从 0 开始），收齐时返回拼接后的数据。
+func (c *Client) mergeFragments(f *frame) ([]byte, bool) {
+	sum, _ := strconv.Atoi(f.header(headerSum))
+	if sum <= 1 {
+		return f.Payload, true
+	}
+	seq, err := strconv.Atoi(f.header(headerSeq))
+	id := f.header(headerMessageID)
+	if err != nil || seq < 0 || seq >= sum || id == "" {
+		c.logger.Printf("飞书事件分片信息不合法: message_id=%q sum=%d seq=%q", id, sum, f.header(headerSeq))
+		return nil, false
+	}
+	now := time.Now()
+	for k, p := range c.fragments {
+		if now.Sub(p.created) > fragmentTTL {
+			delete(c.fragments, k)
+		}
+	}
+	p := c.fragments[id]
+	if p == nil || len(p.parts) != sum {
+		p = &partialEvent{parts: make([][]byte, sum), created: now}
+		c.fragments[id] = p
+	}
+	if p.parts[seq] == nil {
+		p.parts[seq] = f.Payload
+		p.got++
+	}
+	if p.got < sum {
+		return nil, false
+	}
+	delete(c.fragments, id)
+	return bytes.Join(p.parts, nil), true
+}
+
+// ---------------------------------------------------------------------------
+// 消息事件
+// ---------------------------------------------------------------------------
+
+type eventEnvelope struct {
+	Header struct {
+		EventID   string `json:"event_id"`
+		EventType string `json:"event_type"`
+	} `json:"header"`
+	Event json.RawMessage `json:"event"`
+}
+
+type messageEvent struct {
+	Sender struct {
+		SenderID struct {
+			OpenID string `json:"open_id"`
+		} `json:"sender_id"`
+		SenderType string `json:"sender_type"`
+	} `json:"sender"`
+	Message struct {
+		MessageID   string `json:"message_id"`
+		ChatType    string `json:"chat_type"`
+		MessageType string `json:"message_type"`
+		Content     string `json:"content"`
+		Mentions    []struct {
+			Key string `json:"key"`
+		} `json:"mentions"`
+	} `json:"message"`
+}
+
+// messageTypeNames 是非文字消息类型的中文名称，用于控制台提示。
+var messageTypeNames = map[string]string{
+	"post":          "富文本",
+	"image":         "图片",
+	"file":          "文件",
+	"audio":         "语音",
+	"media":         "视频",
+	"sticker":       "表情",
+	"interactive":   "卡片",
+	"share_chat":    "群名片",
+	"share_user":    "个人名片",
+	"merge_forward": "合并转发",
+	"location":      "位置",
+}
+
+// processEvent 处理一个事件，返回回给飞书的状态码：200 表示已处理（包括按规则忽略），
+// 500 表示键入失败、希望飞书稍后重推。
+func (c *Client) processEvent(ctx context.Context, payload []byte) int {
+	var env eventEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		c.logger.Printf("解析飞书事件失败: %v", err)
+		return http.StatusOK
+	}
+	if env.Header.EventType != eventMessageReceive {
+		return http.StatusOK
+	}
+	var ev messageEvent
+	if err := json.Unmarshal(env.Event, &ev); err != nil {
+		c.logger.Printf("解析飞书消息事件失败: %v", err)
+		return http.StatusOK
+	}
+	if ev.Sender.SenderType != "" && ev.Sender.SenderType != "user" {
+		return http.StatusOK
+	}
+	id := ev.Message.MessageID
+	if id == "" {
+		id = env.Header.EventID
+	}
+	if id != "" && c.acked.Has(id) {
+		return http.StatusOK
+	}
+	from := ev.Sender.SenderID.OpenID
+
+	if ev.Message.ChatType != "p2p" {
+		c.logger.Printf("忽略群聊消息 id=%s：只支持机器人单聊", id)
+		c.markAcked(id)
+		return http.StatusOK
+	}
+	if !c.senderAllowed(from) {
+		c.logger.Printf("忽略非白名单发送者 %s", from)
+		c.markAcked(id)
+		return http.StatusOK
+	}
+	if ev.Message.MessageType != "text" {
+		name, ok := messageTypeNames[ev.Message.MessageType]
+		if !ok {
+			name = "未知类型 " + ev.Message.MessageType + " "
+		}
+		c.logger.Printf("忽略%s消息 from=%s id=%s：暂只支持文字消息", name, from, id)
+		c.markAcked(id)
+		return http.StatusOK
+	}
+	text := extractText(ev.Message.Content, ev.Message.Mentions)
+	if text == "" {
+		c.logger.Printf("忽略空白文字消息 from=%s id=%s", from, id)
+		c.markAcked(id)
+		return http.StatusOK
+	}
+
+	c.logger.Printf("收到文本消息 from=%s id=%s: %s", from, id, truncate(text, 100))
+	err := c.handle(ctx, relay.Message{From: from, Text: text})
+	if errors.Is(err, relay.ErrDiscarded) {
+		c.logger.Printf("消息 id=%s 未发送: %v", id, err)
+		c.markAcked(id)
+		return http.StatusOK
+	}
+	if err != nil {
+		c.logger.Printf("文字输入失败: %v", err)
+		return http.StatusInternalServerError
+	}
+	c.markAcked(id)
+
+	if reply := strings.TrimSpace(c.cfg.Ack.ReplyText); reply != "" {
+		if err := c.sendText(ctx, from, reply); err != nil {
+			c.logger.Printf("发送回执失败: %v", err)
+		}
+	}
+	c.logger.Println("消息已投递并确认")
+	return http.StatusOK
+}
+
+// extractText 从 content（形如 {"text":"..."}）取出文字，并去掉 @ 提及的占位符（如 @_user_1）。
+func extractText(content string, mentions []struct {
+	Key string `json:"key"`
+}) string {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(content), &body); err != nil {
+		return ""
+	}
+	text := body.Text
+	for _, m := range mentions {
+		if m.Key != "" {
+			text = strings.ReplaceAll(text, m.Key, "")
+		}
+	}
+	return strings.TrimSpace(text)
+}
+
+func (c *Client) markAcked(id string) {
+	if id == "" {
+		return
+	}
+	if err := c.acked.Add(id); err != nil {
+		c.logger.Printf("保存已处理消息记录失败: %v", err)
+	}
+}
+
+// senderAllowed：配置了白名单时按白名单；否则只接受扫码人本人；都不知道时接受所有人。
+func (c *Client) senderAllowed(openID string) bool {
+	if list := c.cfg.Feishu.AllowedSenders; len(list) > 0 {
+		return containsString(list, openID)
+	}
+	if c.owner != "" {
+		return openID == c.owner
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// 回执
+// ---------------------------------------------------------------------------
+
+// sendText 以机器人身份给 openID 发送一条文本消息。
+func (c *Client) sendText(ctx context.Context, openID, text string) error {
+	tok, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	content, _ := json.Marshal(map[string]string{"text": text})
+	body, _ := json.Marshal(map[string]string{"receive_id": openID, "msg_type": "text", "content": string(content)})
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		c.openBase(c.domain)+"/open-apis/im/v1/messages?receive_id_type=open_id", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	var r struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := c.doJSON(req, &r); err != nil {
+		return err
+	}
+	if r.Code != 0 {
+		return fmt.Errorf("code=%d %s", r.Code, r.Msg)
+	}
+	return nil
+}
+
+// tenantAccessToken 获取并缓存应用访问凭证，过期前 5 分钟刷新。
+func (c *Client) tenantAccessToken(ctx context.Context) (string, error) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if c.tenantToken != "" && time.Now().Before(c.tokenExpiry) {
+		return c.tenantToken, nil
+	}
+	body, _ := json.Marshal(map[string]string{"app_id": c.appID, "app_secret": c.appSecret})
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		c.openBase(c.domain)+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	var r struct {
+		Code   int    `json:"code"`
+		Msg    string `json:"msg"`
+		Token  string `json:"tenant_access_token"`
+		Expire int    `json:"expire"`
+	}
+	if err := c.doJSON(req, &r); err != nil {
+		return "", fmt.Errorf("获取应用访问凭证失败: %w", err)
+	}
+	if r.Code != 0 || r.Token == "" {
+		return "", fmt.Errorf("获取应用访问凭证失败: code=%d %s", r.Code, r.Msg)
+	}
+	c.tenantToken = r.Token
+	c.tokenExpiry = time.Now().Add(time.Duration(r.Expire)*time.Second - 5*time.Minute)
+	return r.Token, nil
+}
+
+// doJSON 发送请求并解析 JSON 响应。飞书接口出错时也常返回 JSON，因此先尝试解析，解析不了再报 HTTP 错误。
+func (c *Client) doJSON(req *http.Request, out any) error {
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(data), 200))
+	}
+	return nil
+}

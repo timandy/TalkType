@@ -4,7 +4,7 @@
 
 基于微信官方 iLink Bot API（ClawBot，小龙虾），扫码登录后长轮询接收文本消息，键入到当前光标处，
 或键入到用快捷键锁定的窗口与终端。终端在后台直接写入，不抢焦点，也不占用剪贴板。
-可替代 OpenClaw 的微信渠道插件。
+可替代 OpenClaw 的微信渠道插件。也支持飞书机器人单聊（`-source feishu`），扫码创建机器人后通过长连接收消息。
 
 > 依赖 Windows Win32 API（`user32.dll` / `kernel32.dll`），只能在 Windows 上运行。
 > Linux / 云端环境只能编译与静态检查，无法验证真实键盘输入。
@@ -15,13 +15,13 @@
 - **长轮询收消息**：`getupdates` 挂起约 35 秒，无需公网 IP 或 Webhook
 - **请求签名**：HMAC-SHA256（`v1` 方案），可开关
 - **可靠 ACK**：键入成功才推进并持久化游标，失败保留游标重放
-- **消息去重**：按 `message_id` 记录，避免重放导致重复输入
-- **凭证持久化**：`token.json` 原子写入，重启免扫码
+- **消息去重**：已处理的 `message_id` 逐行追加到 `wechat_acked.ids`，避免重放导致重复输入
+- **凭证持久化**：`wechat_token.json` 原子写入，重启免扫码
 - **断线重连**：指数退避 + 抖动；会话过期（`-14`）自动重新登录
 - **Unicode 键入**：中文、Emoji 直接输入，无需剪贴板和输入法
 - **发送者白名单**：只处理指定微信用户的消息
 - **锁定窗口或终端**：Alt+. 锁定目标，Alt+/ 解除；终端（PowerShell、Windows Terminal、JetBrains / VS Code 终端）在后台直接写入，不切换窗口
-- **消息来源可替换**：微信，或调试用的控制台输入
+- **消息来源可替换**：微信、飞书（机器人单聊），或调试用的控制台输入
 
 ## 工作流程
 
@@ -35,7 +35,7 @@
 ```
 
 1. 首次运行：`get_bot_qrcode` 获取二维码 → 微信扫码 → `get_qrcode_status` 确认
-2. 登录成功：保存 `bot_token`、`baseurl`、`ilink_bot_id` 到 `token.json`
+2. 登录成功：保存 `bot_token`、`baseurl`、`ilink_bot_id` 到 `wechat_token.json`
 3. 常驻循环：`getupdates` 收消息 → 过滤文本 → Unicode 键入 → 持久化游标
 4. 异常恢复：网络错误退避重连；`-14` 清空凭证重新扫码
 
@@ -91,57 +91,64 @@ GOOS=windows GOARCH=amd64 go vet ./...
 
 ## 配置说明
 
-配置文件为 `config.json`，未填写的字段使用默认值。
+配置文件为 `config.json`，未填写的字段使用默认值。顶层是消息来源 `source` 和各来源共用的配置，
+微信、飞书独有的配置分别放在 `wechat`、`feishu` 对象里，只有正在使用的来源会被校验。
+不认识的字段会报错，避免拼错的字段被静默忽略。
 
-### 基础
+```json
+{
+  "source": "wechat",
+  "login": { ... }, "reconnect": { ... }, "inject": { ... }, "ack": { ... },
+  "wechat": { ... },
+  "feishu": { ... }
+}
+```
 
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
-| `base_url` | `https://ilinkai.weixin.qq.com` | iLink Bot API 地址 |
-| `bot_type` | `"3"` | 扫码登录的 bot 类型 |
-| `channel_version` | `"2.1.6"` | `base_info.channel_version`，随官方插件升级 |
-| `token_file` | `"token.json"` | 凭证文件，相对路径以配置文件目录为基准 |
-| `token` | `""` | 可直接填 `bot_id:secret` 免扫码，通常留空 |
-
-### 登录与轮询
-
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
-| `login.auto_open_qr` | `true` | 自动用浏览器打开二维码链接 |
-| `login.poll_interval_ms` | `2000` | 扫码状态轮询间隔 |
-| `poll.timeout_seconds` | `35` | `getupdates` 长轮询超时 |
-| `poll.http_timeout_seconds` | `45` | 单次 HTTP 超时，需大于长轮询超时 |
-
-### 重连
+### 消息来源
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `reconnect.min_delay_ms` | `1000` | 初始退避时间 |
+| `source` | `"wechat"` | `wechat`（微信）、`feishu`（飞书）或 `console`（调试用），不区分大小写。命令行 `-source` 可临时覆盖 |
+
+### 共用
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `login.auto_open_qr` | `true` | 扫码登录时自动用浏览器打开二维码链接（微信、飞书） |
+| `reconnect.min_delay_ms` | `1000` | 断线重连的初始退避时间 |
 | `reconnect.max_delay_ms` | `60000` | 最大退避时间，每次失败翻倍 |
-
-### 文本输入
-
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
 | `inject.type_delay_ms` | `60` | 文字键入完成后、发送回车前的等待 |
 | `inject.enter_delay_ms` | `120` | 回车前的额外等待 |
 | `inject.press_enter` | `true` | 键入后是否发送回车 |
 | `inject.max_retries` | `5` | 单条消息键入失败的重试次数 |
+| `ack.reply_text` | `""` | 非空时，键入成功后向发送者回一条文本作为回执（微信、飞书） |
+| `ack.max_acked_ids` | `500` | 保留的已处理消息 ID 数量，用于去重（微信、飞书）。记录文件超过两倍时压缩 |
 
-### ACK 与过滤
-
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ack.reply_text` | `""` | 非空时，处理成功向发送者回一条文本作为回执 |
-| `ack.max_acked_ids` | `500` | 本地保留的已 ACK 消息 ID 数量 |
-| `filter.allowed_senders` | `[]` | 发送者白名单，空表示全部允许 |
-
-### 签名
+### 微信（`wechat`）
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `signature.enabled` | `true` | 是否为业务 POST 附加签名头 |
-| `signature.secret` | `""` | 签名密钥，留空时取 token 中最后一个 `:` 之后的部分 |
+| `wechat.base_url` | `https://ilinkai.weixin.qq.com` | iLink Bot API 地址 |
+| `wechat.bot_type` | `"3"` | 扫码登录的 bot 类型 |
+| `wechat.channel_version` | `"2.1.6"` | `base_info.channel_version`，随官方插件升级 |
+| `wechat.token_file` | `"wechat_token.json"` | 凭证文件，相对路径以配置文件目录为基准 |
+| `wechat.token` | `""` | 可直接填 `bot_id:secret` 免扫码，通常留空 |
+| `wechat.qr_poll_interval_ms` | `2000` | 扫码状态轮询间隔 |
+| `wechat.signature.enabled` | `true` | 是否为业务 POST 附加签名头 |
+| `wechat.signature.secret` | `""` | 签名密钥，留空时取 token 中最后一个 `:` 之后的部分 |
+| `wechat.poll.timeout_seconds` | `35` | `getupdates` 长轮询超时 |
+| `wechat.poll.http_timeout_seconds` | `45` | 单次 HTTP 超时，需大于长轮询超时 |
+| `wechat.allowed_senders` | `[]` | 发送者白名单，空表示全部允许 |
+
+### 飞书（`feishu`）
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `feishu.domain` | `"feishu"` | `feishu`（国内版）或 `lark`（国际版）；扫码时会按扫码账号自动切换 |
+| `feishu.app_id` | `""` | 手动填写的 App ID；留空时扫码创建机器人 |
+| `feishu.app_secret` | `""` | 手动填写的 App Secret，需与 `app_id` 同时填写 |
+| `feishu.token_file` | `"feishu_token.json"` | 飞书凭证文件，相对路径以配置文件目录为基准 |
+| `feishu.allowed_senders` | `[]` | 发送者 `open_id` 白名单；为空时只接受扫码人本人，手动填写凭证时接受所有人 |
 
 ## 实现说明
 
@@ -171,23 +178,26 @@ signature = "v1=" + base64(HMAC-SHA256(secret, canonical))
 ```
 
 写入请求头 `X-ILink-Timestamp`、`X-ILink-Nonce`、`X-ILink-Signature`。
-不需要时设置 `signature.enabled = false`。
+不需要时设置 `wechat.signature.enabled = false`。
 
 ### 消息 ACK
 
 iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK：
 
 1. `getupdates` 返回 `msgs` 与新的 `get_updates_buf`
-2. 逐条处理消息，键入成功后将 `message_id` 写入本地 ACK 列表
+2. 逐条处理消息，键入成功后将 `message_id` 追加到 `wechat_acked.ids`
 3. 一批消息全部成功后才更新并持久化游标
 4. 任意一条失败则不推进游标，退避后用旧游标重放
 5. 重放时按 `message_id` 去重，已处理的不会再次键入
+
+`wechat_acked.ids` 是纯文本，一行一个 ID，每处理一条消息追加一行；行数超过 `ack.max_acked_ids` 的两倍时整份重写，只留最近的；
+进程中断导致最后一行没写完时，读取时丢弃该行并在下次写入前重写文件。删除该文件只会失去去重记录，不影响登录。
 
 配置 `ack.reply_text` 后，处理成功还会调用 `sendmessage` 回一条用户可见的回执。
 
 ### 会话过期与重连
 
-- `ret` / `errcode` 为 `-14`，或 HTTP 401/403：删除 `token.json`、清空内存状态并重新扫码
+- `ret` / `errcode` 为 `-14`，或 HTTP 401/403：删除 `wechat_token.json`、清空内存状态并重新扫码
 - 网络错误、HTTP 5xx、响应解析失败：按 `min_delay_ms` 起步翻倍，封顶 `max_delay_ms`，叠加随机抖动
 - 成功收到一次 `getupdates` 响应即重置退避
 
@@ -235,8 +245,11 @@ iLink 没有单独的 ACK 接口，长轮询游标 `get_updates_buf` 就是 ACK�
 
 ## 消息来源
 
-- `-source wechat`（默认）：微信。
-- `-source console`：调试用，不连接微信，在本程序窗口里输入文字测试发送。
+用 `config.json` 的 `source` 选择，也可以用命令行 `-source` 临时覆盖：
+
+- `wechat`（默认）：微信。
+- `feishu`：飞书机器人单聊，用法见下文。
+- `console`：调试用，不连接微信，在本程序窗口里输入文字测试发送。
 
 控制台来源的用法：
 
@@ -246,6 +259,29 @@ wetype.exe -source console
 
 每输入一行并回车，就当作收到一条消息。先切到目标终端按 Alt+. 锁定，再回到本窗口输入即可。
 未锁定时，回车后有 3 秒时间切到目标窗口。
+
+### 飞书
+
+```bat
+wetype.exe -source feishu
+```
+
+也可以把 `config.json` 的 `source` 改为 `feishu`，之后直接运行 `wetype.exe`。
+
+首次运行会打印一个飞书授权链接，并在 `login.auto_open_qr` 开启时自动用浏览器打开。
+用飞书 App 扫描该链接的二维码并确认，飞书会自动创建一个机器人应用，App ID、App Secret 和扫码人的 `open_id`
+保存到 `feishu_token.json`，之后重启免扫码。然后在飞书里给这个机器人发单聊消息即可。
+
+- 收消息走飞书长连接（WebSocket），程序主动连出，不需要公网 IP；WebSocket 和帧编解码都是手写的，不依赖飞书 SDK
+- 只处理机器人单聊里的文字消息；群聊消息、图片等只在控制台提示，不输入、不回复
+- 默认只接受扫码人本人的消息，可用 `feishu.allowed_senders` 改为指定的 `open_id` 列表
+- 键入失败时向飞书返回 500、不记为已处理，期望飞书重推；键入成功或按规则忽略时返回 200
+- 扫码不可用（例如公司组织禁止成员创建应用）时，可在飞书开放平台手动创建企业自建应用，开启机器人能力、
+  订阅 `im.message.receive_v1` 并选择“使用长连接接收事件”，然后把 App ID 和 App Secret 填到 `feishu.app_id`、`feishu.app_secret`
+- `-relogin` 会清除 `feishu_token.json` 并重新扫码
+
+扫码用的应用注册接口取自飞书官方安装工具 `@larksuite/openclaw-lark-tools`，开放平台没有公开文档，接口变化时扫码可能失效。企业组织账号扫码创建的应用需要管理员审核后才能使用。
+调研记录和协议细节见 [docs/feishu.md](docs/feishu.md)。
 
 ## 常见问题
 
@@ -262,12 +298,13 @@ wetype.exe -source console
 
 ## 安全与限制
 
-- `token.json` 等同于该 ClawBot 的收发权限，请勿提交到仓库或发到群聊；程序以 `0600` 写入
+- `wechat_token.json` 等同于该 ClawBot 的收发权限，请勿提交到仓库或发到群聊；程序以 `0600` 写入
+- `feishu_token.json` 含飞书机器人的 App Secret，同样请勿提交或外传；程序以 `0600` 写入
 - iLink 目前仅支持私聊，不支持群聊
 - ClawBot 名额通常只有一个，重复扫码可能顶掉之前的绑定
 - 仅处理文本消息；图片、语音、文件等只在控制台打印“忽略…消息：暂只支持文字消息”，不输入、不回复
 - 仅支持 Windows；UAC 安全桌面、更高完整性级别的窗口可能拒绝合成键击
-- 协议字段可能随微信客户端版本变化，升级时请同步 `channel_version` 并复核接口
+- 协议字段可能随微信客户端版本变化，升级时请同步 `wechat.channel_version` 并复核接口
 
 ## 项目结构
 
@@ -280,13 +317,21 @@ wetype/
 │   ├── config/
 │   │   └── config.go        配置结构、默认值、校验
 │   ├── store/
-│   │   └── store.go         bot_token、游标、context_token、ACK 持久化
+│   │   ├── store.go         微信：bot_token、游标、context_token、ACK 持久化
+│   │   ├── feishu.go        飞书：App ID / Secret
+│   │   └── acked.go         已处理消息 ID 记录：追加写入、超过上限压缩、丢弃写了一半的行
 │   ├── relay/
 │   │   └── relay.go         消息来源接口 Source、投递器 Deliverer
 │   ├── ilink/                微信消息来源
 │   │   ├── protocol.go      iLink JSON 协议结构
 │   │   ├── client.go        签名、登录、长轮询、ACK、重连、sendmessage
 │   │   └── util.go          随机数、退避、休眠、打开链接
+│   ├── feishu/               飞书消息来源（不依赖 SDK）
+│   │   ├── client.go        长连接会话、心跳、事件处理、回执
+│   │   ├── register.go      扫码创建机器人（设备码流程）
+│   │   ├── websocket.go     最小 WebSocket 客户端（RFC 6455）
+│   │   ├── frame.go         长连接帧 pbbp2.Frame 的 protobuf 编解码
+│   │   └── util.go          休眠、退避、打开链接
 │   ├── console/
 │   │   └── source.go        控制台消息来源（调试用）
 │   ├── winlock/              快捷键锁定：状态与语义、目标识别、热键、提示卡片
@@ -298,9 +343,11 @@ wetype/
 │       ├── process_windows.go 进程快照、控制台宿主、读操作计数
 │       └── *_other.go       非 Windows 占位实现
 ├── docs/
-│   └── window-lock.md       锁定功能的原理与支持范围
+│   ├── window-lock.md       锁定功能的原理与支持范围
+│   └── feishu.md            飞书来源的协议细节与调研记录
 ├── config.json              运行配置
-├── token.json               运行后生成：凭证与游标
+├── wechat_token.json        运行后生成：微信凭证与游标
+├── feishu_token.json        运行后生成：飞书凭证（source = feishu）
 ├── go.mod
 └── README.md
 ```
@@ -308,9 +355,9 @@ wetype/
 分层约定：
 
 - `cmd` 只负责进程生命周期与依赖装配
-- `internal/ilink` 不直接操作文件，凭证读写全部通过 `internal/store`
+- `internal/ilink`、`internal/feishu` 不直接操作文件，凭证读写全部通过 `internal/store`
 - `internal/wintype` 和 `internal/winlock` 的 `*_windows.go` 承载 Win32 调用，其他包不依赖 `syscall` / `unsafe`
-- `internal/ilink` 只是消息来源之一，不直接调用键盘输入，投递统一经 `internal/relay`
+- `internal/ilink`、`internal/feishu` 只是消息来源，不直接调用键盘输入，投递统一经 `internal/relay`
 - `internal/config` 无内部依赖，可被任意层引用
 
 ## 许可证
