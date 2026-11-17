@@ -47,25 +47,26 @@ type winRect struct{ left, top, right, bottom int32 }
 
 const swpResizeOnly = 0x0002 | 0x0004 | 0x0010 // SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
 
-// HeightShrinker 临时调整窗口高度：记下原始尺寸，按需把底边上移不同距离，最后恢复原样。
-// 宽度和左上角始终不变。用于让窗口里正在显示的终端收到尺寸变化：只改高度时终端只少几行，
-// 列数不变，不会触发整屏重新折行。
+// WindowShrinker 临时缩小窗口：记下原始尺寸，按需把右边和底边同时内移不同距离，最后恢复原样。
+// 左上角始终不变。用于让窗口里正在显示的终端收到尺寸变化。
+// 宽度和高度都要改：JetBrains 2026.3 的嵌入终端只在宽度变化时通知终端，
+// 浮动终端改宽度或高度都会通知。
 //
-// 调用方需要已经 runtime.LockOSThread，从 BeginShrinkHeight 到 Restore 都在同一线程上：
+// 调用方需要已经 runtime.LockOSThread，从 BeginShrink 到 Restore 都在同一线程上：
 // 期间线程临时切到按显示器 DPI 工作，读写的都是物理像素，恢复时尺寸分毫不差。
-type HeightShrinker struct {
+type WindowShrinker struct {
 	h      uintptr
 	w, ht  int32 // 原始宽高（物理像素）
 	dpi    int64
 	oldCtx uintptr
 }
 
-// BeginShrinkHeight 记下窗口当前尺寸。窗口最小化或取不到尺寸时返回 false。
-func BeginShrinkHeight(h uintptr) (*HeightShrinker, bool) {
+// BeginShrink 记下窗口当前尺寸。窗口最小化或取不到尺寸时返回 false。
+func BeginShrink(h uintptr) (*WindowShrinker, bool) {
 	if h == 0 || isIconic(h) {
 		return nil, false
 	}
-	s := &HeightShrinker{h: h, dpi: 96}
+	s := &WindowShrinker{h: h, dpi: 96}
 	if procSetThreadDpiAwareness.Find() == nil {
 		s.oldCtx, _, _ = procSetThreadDpiAwareness.Call(dpiAwarenessPerMonitorV2)
 	}
@@ -83,27 +84,25 @@ func BeginShrinkHeight(h uintptr) (*HeightShrinker, bool) {
 	return s, true
 }
 
-// Shrink 把底边相对原始位置上移 by 个逻辑像素（96 DPI 下的像素，按窗口所在显示器的 DPI 换算），
-// 最多上移原始高度的一半。返回实际上移的物理像素数。
-func (s *HeightShrinker) Shrink(by int32) int32 {
-	dy := int32((int64(by)*s.dpi + 48) / 96)
-	if limit := s.ht / 2; dy > limit {
-		dy = limit
-	}
-	if dy <= 0 {
+// Shrink 把右边和底边相对原始位置各内移 by 个逻辑像素（96 DPI 下的像素，按窗口所在显示器的 DPI 换算），
+// 每个方向最多内移原始尺寸的一半。返回实际内移的物理像素数（两个方向中较大的一个）。
+func (s *WindowShrinker) Shrink(by int32) int32 {
+	d := int32((int64(by)*s.dpi + 48) / 96)
+	if d <= 0 {
 		return 0
 	}
-	procSetWindowPos.Call(s.h, 0, 0, 0, uintptr(s.w), uintptr(s.ht-dy), swpResizeOnly)
-	return dy
+	dx, dy := min(d, s.w/2), min(d, s.ht/2)
+	procSetWindowPos.Call(s.h, 0, 0, 0, uintptr(s.w-dx), uintptr(s.ht-dy), swpResizeOnly)
+	return max(dx, dy)
 }
 
 // Restore 恢复原始尺寸，并恢复线程的 DPI 设置。
-func (s *HeightShrinker) Restore() {
+func (s *WindowShrinker) Restore() {
 	procSetWindowPos.Call(s.h, 0, 0, 0, uintptr(s.w), uintptr(s.ht), swpResizeOnly)
 	s.resetThread()
 }
 
-func (s *HeightShrinker) resetThread() {
+func (s *WindowShrinker) resetThread() {
 	if s.oldCtx != 0 {
 		procSetThreadDpiAwareness.Call(s.oldCtx)
 	}

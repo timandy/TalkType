@@ -35,33 +35,35 @@ func rectOf(h uintptr) winRect {
 	return r
 }
 
-func TestHeightShrinker(t *testing.T) {
+func TestWindowShrinker(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	h := newHiddenWindow(t, 800, 600)
 	orig := rectOf(h)
 
-	s, ok := BeginShrinkHeight(h)
+	s, ok := BeginShrink(h)
 	if !ok {
-		t.Fatal("BeginShrinkHeight failed")
+		t.Fatal("BeginShrink failed")
 	}
 	for _, by := range []int32{24, 64, 120} {
-		dy := s.Shrink(by)
+		d := s.Shrink(by)
 		r := rectOf(h)
-		if dy <= 0 || r.bottom != orig.bottom-dy {
-			t.Errorf("Shrink(%d): dy=%d bottom=%d, want %d", by, dy, r.bottom, orig.bottom-dy)
+		if d <= 0 || r.bottom != orig.bottom-d || r.right != orig.right-d {
+			t.Errorf("Shrink(%d): d=%d rect=%+v, orig %+v", by, d, r, orig)
 		}
-		if r.left != orig.left || r.top != orig.top || r.right != orig.right {
-			t.Errorf("Shrink(%d) moved other edges: %+v vs %+v", by, r, orig)
+		if r.left != orig.left || r.top != orig.top {
+			t.Errorf("Shrink(%d) moved top-left: %+v vs %+v", by, r, orig)
 		}
 	}
 	// 每一级都相对原始尺寸计算，而不是在上一级的基础上继续缩
-	if dy := s.Shrink(24); rectOf(h).bottom != orig.bottom-dy {
+	if d := s.Shrink(24); rectOf(h).bottom != orig.bottom-d {
 		t.Error("shrink should be relative to the original size")
 	}
-	// 最多上移原始高度的一半
-	if dy := s.Shrink(10000); dy != (orig.bottom-orig.top)/2 {
-		t.Errorf("Shrink should be capped at half height, got %d", dy)
+	// 每个方向最多内移原始尺寸的一半
+	s.Shrink(10000)
+	if r := rectOf(h); r.bottom-r.top != (orig.bottom-orig.top)-(orig.bottom-orig.top)/2 ||
+		r.right-r.left != (orig.right-orig.left)-(orig.right-orig.left)/2 {
+		t.Errorf("Shrink should be capped at half size, got %+v", r)
 	}
 	s.Restore()
 	if got := rectOf(h); got != orig {
@@ -69,10 +71,10 @@ func TestHeightShrinker(t *testing.T) {
 	}
 }
 
-func TestBeginShrinkHeightRejectsInvalidWindow(t *testing.T) {
+func TestBeginShrinkRejectsInvalidWindow(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if _, ok := BeginShrinkHeight(0); ok {
+	if _, ok := BeginShrink(0); ok {
 		t.Error("window 0 should be rejected")
 	}
 }

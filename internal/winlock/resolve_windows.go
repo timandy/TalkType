@@ -24,9 +24,9 @@ var shellExes = map[string]bool{
 
 const maxAncestorDepth = 32
 
-// resizeProbeSteps 是尺寸探测的各级：底边上移的逻辑像素数（96 DPI 下，按显示器 DPI 换算）
+// resizeProbeSteps 是尺寸探测的各级：右边和底边各内移的逻辑像素数（96 DPI 下，按显示器 DPI 换算）
 // 和这一级最多等待的时间。正在显示的终端实测 10～60 毫秒内有反应。
-// 24 像素大于一行文字的高度；终端停靠在 IDE 主窗口里、只分到一部分高度时，靠后两级保证行数会变。
+// 24 像素大于一行文字的高度、也大于几列的宽度；终端停靠在 IDE 主窗口里、只分到一部分尺寸时，靠后两级保证行数或列数会变。
 var resizeProbeSteps = []struct {
 	pixels int32
 	wait   time.Duration
@@ -165,10 +165,10 @@ func resolveConsole(hwnd uintptr, winPID uint32) (consoleMatch, int) {
 	}
 }
 
-// visibleBySize 找出窗口里正在显示的终端：把窗口底边临时上移几个像素再恢复。
+// visibleBySize 找出窗口里正在显示的终端：把窗口右边和底边临时内移几个像素再恢复。
 // IDE 只会调整正在显示的终端的尺寸，尺寸变化会通过 ConPTY 传给该终端的宿主进程，
 // 使它的读计数增加；隐藏的终端和后台标签不受影响。有终端在显示时约 0.1 秒，
-// 没有时要等完所有级别（约 0.22 秒），窗口底部会轻微闪一下。窗口最小化等无法探测的情况返回空。
+// 没有时要等完所有级别（约 0.22 秒），窗口右边和底部会轻微闪一下。窗口最小化等无法探测的情况返回空。
 func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) []wintype.ConsoleInfo {
 	hosts := make([]uint32, len(cands))
 	before := make([]uint64, len(cands))
@@ -193,16 +193,16 @@ func visibleBySize(hwnd uintptr, cands []wintype.ConsoleInfo) []wintype.ConsoleI
 		return out
 	}
 
-	runtime.LockOSThread() // HeightShrinker 会临时调整本线程的 DPI 设置
+	runtime.LockOSThread() // WindowShrinker 会临时调整本线程的 DPI 设置
 	defer runtime.UnlockOSThread()
-	sh, ok := wintype.BeginShrinkHeight(hwnd)
+	sh, ok := wintype.BeginShrink(hwnd)
 	if !ok {
 		logf("尺寸探测：窗口无法调整尺寸（可能已最小化）")
 		return nil
 	}
 
-	// 逐级加大上移距离：终端单独成窗口时第一级就有反应；终端停靠在 IDE 主窗口里时，
-	// 上移的高度可能有一部分分给编辑区，后面几级保证终端面板也分到至少一行。
+	// 逐级加大内移距离：终端单独成窗口时第一级就有反应；终端停靠在 IDE 主窗口里时，
+	// 内移的尺寸可能有一部分分给编辑区，后面几级保证终端面板也分到至少一行或一列。
 	var changed []int
 	start := time.Now()
 probe:
@@ -212,7 +212,7 @@ probe:
 		for time.Now().Before(stepEnd) {
 			time.Sleep(resizeProbePoll)
 			if changed = changedNow(nil); len(changed) > 0 {
-				logf("尺寸探测：第 %d 级（上移 %d 像素）在 %v 后有反应", i+1, px, time.Since(start).Round(time.Millisecond))
+				logf("尺寸探测：第 %d 级（内移 %d 像素）在 %v 后有反应", i+1, px, time.Since(start).Round(time.Millisecond))
 				time.Sleep(resizeProbeSettle)
 				changed = append(changed, changedNow(changed)...)
 				break probe
