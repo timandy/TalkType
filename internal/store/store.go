@@ -70,6 +70,13 @@ func (s *TokenStore) Base() string {
 	return s.BaseURL
 }
 
+// Owner 返回扫码人的 ilink_user_id，只接受此人的消息。
+func (s *TokenStore) Owner() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.UserID
+}
+
 func (s *TokenStore) Buf() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -20,6 +20,8 @@ import (
 	"wetype/internal/config"
 	"wetype/internal/relay"
 	"wetype/internal/store"
+	"wetype/internal/ws"
+	"wetype/internal/ws/wstest"
 )
 
 func newTestClient(t *testing.T, mutate func(*config.Config)) (*Client, *bytes.Buffer) {
@@ -273,6 +275,7 @@ func TestProcessEventRules(t *testing.T) {
 
 func TestProcessEventFailureAndDiscard(t *testing.T) {
 	c, _ := newTestClient(t, nil)
+	c.owner = "ou_any"
 	h := &recordingHandler{err: errors.New("boom")}
 	c.handle = h.handle
 
@@ -297,16 +300,12 @@ func TestProcessEventFailureAndDiscard(t *testing.T) {
 
 func TestSenderAllowed(t *testing.T) {
 	c, _ := newTestClient(t, nil)
-	if !c.senderAllowed("anyone") {
-		t.Error("no owner and no allowlist: should accept everyone")
+	if c.senderAllowed("anyone") || c.senderAllowed("") {
+		t.Error("no owner and no allowlist: should accept nobody")
 	}
 	c.owner = "ou_owner"
 	if c.senderAllowed("anyone") || !c.senderAllowed("ou_owner") {
 		t.Error("owner known: only owner allowed")
-	}
-	c.cfg.Feishu.AllowedSenders = []string{"ou_a"}
-	if c.senderAllowed("ou_owner") || !c.senderAllowed("ou_a") {
-		t.Error("allowlist overrides owner")
 	}
 }
 
@@ -376,11 +375,11 @@ func TestSessionEndToEnd(t *testing.T) {
 	var srv *httptest.Server
 	mux.HandleFunc("/callback/ws/endpoint", func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&gotEndpointBody)
-		fmt.Fprintf(w, `{"code":0,"data":{"URL":"%s/ws?device_id=d1&service_id=42","ClientConfig":{"PingInterval":120}}}`, wsURL(srv))
+		fmt.Fprintf(w, `{"code":0,"data":{"URL":"%s/ws?device_id=d1&service_id=42","ClientConfig":{"PingInterval":120}}}`, wstest.URL(srv))
 	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		s := acceptWS(t, w, r)
-		defer s.conn.Close()
+		s := wstest.Accept(t, w, r)
+		defer s.Close()
 		// 事件分两片发送
 		payload := messageEventJSON("om_1", "p2p", "text", `{"text":"来自飞书"}`, "ou_owner")
 		half := len(payload) / 2
@@ -388,17 +387,17 @@ func TestSessionEndToEnd(t *testing.T) {
 			f := &frame{SeqID: 9, LogID: 8, Service: 42, Method: methodData, Payload: part, Headers: []header{
 				{headerType, typeEvent}, {headerMessageID, "msg-1"}, {headerSum, "2"}, {headerSeq, fmt.Sprint(i)}, {headerTraceID, "t"},
 			}}
-			s.write(true, opBinary, f.encode())
+			s.Write(true, ws.OpBinary, f.encode())
 		}
-		op, data, err := s.read()
-		if err != nil || op != opBinary {
+		op, data, err := s.Read()
+		if err != nil || op != ws.OpBinary {
 			results <- result{err: fmt.Errorf("read response: op=%d err=%v", op, err)}
 			return
 		}
 		f, err := decodeFrame(data)
 		results <- result{resp: f, err: err}
-		s.write(true, opClose, []byte{0x03, 0xE8})
-		s.read()
+		s.Write(true, ws.OpClose, []byte{0x03, 0xE8})
+		s.Read()
 	})
 	srv = httptest.NewServer(mux)
 	defer srv.Close()
@@ -411,7 +410,7 @@ func TestSessionEndToEnd(t *testing.T) {
 
 	healthy := false
 	err := c.session(context.Background(), func() { healthy = true })
-	if !errors.Is(err, errWSClosed) {
+	if !errors.Is(err, ws.ErrClosed) {
 		t.Fatalf("session ended with %v", err)
 	}
 	if !healthy {
@@ -470,23 +469,6 @@ func TestSendTextReply(t *testing.T) {
 	}
 }
 
-func TestRunFatalWhenConfigCredentialsInvalid(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"code":1000040346,"msg":"app_id is invalid","data":{}}`)
-	}))
-	defer srv.Close()
-	c, _ := newTestClient(t, func(cfg *config.Config) {
-		cfg.Feishu.AppID, cfg.Feishu.AppSecret = "cli_bad", "x"
-	})
-	c.openBase = func(string) string { return srv.URL }
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := c.Run(ctx, (&recordingHandler{}).handle)
-	if err == nil || !strings.Contains(err.Error(), "feishu.app_id") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
 func TestRunRescansWhenStoredCredentialsInvalid(t *testing.T) {
 	fake := &fakeRegistration{}
 	accounts := httptest.NewServer(fake)
@@ -523,9 +505,9 @@ func TestRunRescansWhenStoredCredentialsInvalid(t *testing.T) {
 func TestPingLoopSendsPingFrame(t *testing.T) {
 	got := make(chan *frame, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := acceptWS(t, w, r)
-		defer s.conn.Close()
-		_, data, err := s.read()
+		s := wstest.Accept(t, w, r)
+		defer s.Close()
+		_, data, err := s.Read()
 		if err != nil {
 			got <- nil
 			return
@@ -534,7 +516,7 @@ func TestPingLoopSendsPingFrame(t *testing.T) {
 		got <- f
 	}))
 	defer srv.Close()
-	conn, err := dialWS(context.Background(), newWSTransport(), wsURL(srv))
+	conn, err := ws.Dial(context.Background(), ws.NewTransport(), wstest.URL(srv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,10 +556,9 @@ func TestHandleControlUpdatesPingInterval(t *testing.T) {
 	}
 }
 
-func TestLoadCredentialsWarnsAndResetsToken(t *testing.T) {
-	c, logs := newTestClient(t, func(cfg *config.Config) {
-		cfg.Feishu.AppID, cfg.Feishu.AppSecret = "cli_m", "s"
-	})
+func TestLoadCredentialsFromStoreResetsTokenAndWarnsWithoutOwner(t *testing.T) {
+	c, logs := newTestClient(t, nil)
+	c.store.SetCredentials("cli_s", "s", config.LarkDomain, "")
 	c.tenantToken, c.tokenExpiry = "old-app-token", time.Now().Add(time.Hour)
 	if err := c.loadCredentials(context.Background()); err != nil {
 		t.Fatal(err)
@@ -585,16 +566,14 @@ func TestLoadCredentialsWarnsAndResetsToken(t *testing.T) {
 	if c.tenantToken != "" {
 		t.Error("tenant token of the previous app must be dropped")
 	}
-	if !c.fromConfig || c.appID != "cli_m" || !strings.Contains(logs.String(), "警告") {
-		t.Errorf("fromConfig=%v appID=%s logs=%s", c.fromConfig, c.appID, logs.String())
+	if c.appID != "cli_s" || c.domain != config.LarkDomain || !strings.Contains(logs.String(), "-relogin") {
+		t.Errorf("appID=%s domain=%s logs=%s", c.appID, c.domain, logs.String())
 	}
 
-	c2, logs2 := newTestClient(t, func(cfg *config.Config) {
-		cfg.Feishu.AppID, cfg.Feishu.AppSecret = "cli_m", "s"
-		cfg.Feishu.AllowedSenders = []string{"ou_me"}
-	})
+	c2, logs2 := newTestClient(t, nil)
+	c2.store.SetCredentials("cli_s", "s", "", "ou_me")
 	c2.loadCredentials(context.Background())
-	if strings.Contains(logs2.String(), "警告") {
-		t.Error("no warning expected when allowlist is configured")
+	if c2.owner != "ou_me" || c2.domain != config.FeishuDomain || strings.Contains(logs2.String(), "警告") {
+		t.Errorf("owner=%s domain=%s logs=%s", c2.owner, c2.domain, logs2.String())
 	}
 }

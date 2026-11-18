@@ -8,10 +8,10 @@
 ```
 首次运行：init → begin（拿到授权链接）→ 用户用飞书扫码确认 → poll 拿到 App ID / App Secret / open_id → 写入 feishu_token.json
 常驻运行：POST /callback/ws/endpoint 取长连接地址 → WebSocket 连接 → 收事件帧 → 键入 → 回确认帧
-异常恢复：网络错误按 reconnect.* 退避重连；凭证无效时清除本地凭证并重新扫码（手动填写的凭证则直接报错退出）
+异常恢复：网络错误按 reconnect.* 退避重连；凭证无效时清除本地凭证并重新扫码
 ```
 
-凭证的来源顺序：`config.json` 的 `feishu.app_id` / `feishu.app_secret` → `feishu_token.json` → 扫码。
+凭证只能扫码获得：有 `feishu_token.json` 就用它，没有就扫码。不支持在 `config.json` 里手动填写。
 
 ## 2. 扫码创建机器人
 
@@ -32,7 +32,7 @@
 - poll 的其他错误：`slow_down` 轮询间隔加 5 秒；`access_denied`、`expired_token` 重新获取链接。
 - `user_info.tenant_brand == "lark"` 时改用 Lark 地址继续轮询，凭证记为 `lark` 站点。
 - 插件读的是 `expire_in` 字段，实际返回的是 `expires_in`，所以插件一直用默认 600 秒；本程序按 `expires_in` 读。
-- 扫码人的 `open_id` 存为 `owner_open_id`，`feishu.allowed_senders` 为空时只接受此人的消息。
+- 扫码人的 `open_id` 存为 `owner_open_id`，只接受此人的消息。
 
 ## 3. 长连接
 
@@ -46,14 +46,14 @@
 | code | 含义 | 处理 |
 |---|---|---|
 | 0 | 成功 | |
-| 514、1000040346 | 鉴权失败、app_id 无效（后者已实测） | 凭证无效：扫码凭证清除后重扫，手动凭证报错退出 |
+| 514、1000040346 | 鉴权失败、app_id 无效（后者已实测） | 凭证无效：清除本地凭证后重新扫码 |
 | 其他（1 系统繁忙、1000040343 内部错误、1000040350 超出连接数等） | | 退避后重试 |
 
 ### 3.2 WebSocket
 
-`internal/feishu/websocket.go` 是一个只实现所需部分的 RFC 6455 客户端：握手、二进制消息、分片重组、
+`internal/ws`（与企业微信共用）是一个只实现所需部分的 RFC 6455 客户端：握手、二进制消息、分片重组、
 ping/pong、close，不支持扩展。握手借用 `net/http`：服务端回 101 后，响应的 `Body` 就是可读写的底层连接，
-所以 TLS 和系统代理（`HTTPS_PROXY`）与普通请求一致；Transport 关闭了 HTTP/2，WebSocket 握手不能走 HTTP/2。
+所以 TLS 和系统代理（`HTTPS_PROXY`）与普通请求一致；Transport 关闭了 HTTP/2，WebSocket 握手不能走 HTTP/2。握手请求头按原样大小写发送，不带 `User-Agent` 和 `Accept-Encoding`，原因见 [wecom.md](wecom.md) 第 3 节。
 单条消息上限 16 MB。
 
 ### 3.3 帧格式 `pbbp2.Frame`
@@ -90,7 +90,7 @@ header key：`type`（`event` / `card` / `ping` / `pong`）、`message_id`、`su
 | 发送者不是用户（`sender_type != user`） | 忽略 | 200 |
 | `message_id` 已处理过 | 忽略（重推去重） | 200 |
 | 不是单聊（`chat_type != p2p`） | 控制台提示“只支持机器人单聊” | 200 |
-| 发送者不在白名单 | 控制台提示 | 200 |
+| 发送者不是扫码人 | 控制台提示 | 200 |
 | 不是 `text`（图片、富文本 `post` 等） | 控制台提示“暂只支持文字消息” | 200 |
 | 文字为空（去掉 `@_user_1` 这类提及占位符后） | 控制台提示 | 200 |
 | 键入成功，或锁定目标已关闭（消息丢弃） | 记为已处理；配置了 `ack.reply_text` 时回执 | 200 |
@@ -109,7 +109,7 @@ header key：`type`（`event` / `card` / `ping` / `pong`）、`message_id`、`su
 | ACK | 游标，键入成功才推进 | 每条事件回确认帧，没有游标 |
 | 离线期间的消息 | 游标保证上线后补收 | 取决于飞书是否重推，未实测 |
 | 会话 | 私聊 | 只处理机器人单聊 |
-| 白名单 | `wechat.allowed_senders` | `feishu.allowed_senders`，默认只接受扫码人 |
+| 只接受谁 | 扫码人（`ilink_user_id`） | 扫码人（`open_id`） |
 
 飞书没有 HTTP 长轮询接口；事件推送只有 Webhook（需要公网地址）和长连接两种，因此选长连接。
 
@@ -126,7 +126,7 @@ header key：`type`（`event` / `card` / `ping` / `pong`）、`message_id`、`su
 已实测：
 
 - **企业组织账号**：扫码能创建应用并拿到凭证，长连接也能建立；但应用要等企业管理员审核，审核前在飞书里找不到这个机器人，无法发消息。
-  企业不放行时只能请管理员审批，或由管理员建好应用后手动填写 `feishu.app_id` / `feishu.app_secret`。
+  企业不放行时只能请管理员审批。
 - **`tp=ob_cli_app` 参数**：会创建未激活的“飞书 CLI”类应用，收不到消息（见第 2 节），已改为官方工具的参数。
 
 尚未实测：

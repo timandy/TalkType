@@ -14,6 +14,8 @@ token.json
 token.json.tmp
 feishu_token.json
 feishu_token.json.tmp
+wecom_token.json
+wecom_token.json.tmp
 *_acked.ids
 *_acked.ids.tmp
 

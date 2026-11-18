@@ -15,8 +15,7 @@ import (
 )
 
 // 扫码创建机器人：飞书的应用注册接口，OAuth 设备码流程（init → begin → poll）。
-// 接口和参数取自飞书官方安装工具 @larksuite/openclaw-lark-tools，开放平台没有公开文档，
-// 失败时请改为手动填写 app_id / app_secret。
+// 接口和参数取自飞书官方安装工具 @larksuite/openclaw-lark-tools，开放平台没有公开文档。
 
 const (
 	registrationPath = "/oauth/v1/app/registration"
@@ -28,7 +27,7 @@ const (
 	defaultRegistrationExpire   = 10 * time.Minute
 )
 
-// errScanUnavailable 表示当前环境不支持扫码创建，只能手动填写凭证。
+// errScanUnavailable 表示飞书接口不支持扫码创建（init 没有返回 client_secret 方式）。
 var errScanUnavailable = errors.New("当前环境不支持扫码创建飞书机器人")
 
 // errScanRestart 表示本次二维码作废（过期、被拒绝），需要重新获取。
@@ -87,7 +86,7 @@ func (c *Client) postRegistration(ctx context.Context, domain string, form url.V
 
 // scan 扫码创建机器人，直到成功、ctx 结束或确认不支持扫码。二维码失效时自动重新获取。
 func (c *Client) scan(ctx context.Context) (*scanResult, error) {
-	domain := c.cfg.Feishu.Domain
+	domain := config.FeishuDomain // 先连国内版，扫码账号属于 Lark 时自动切换
 	init, err := c.postRegistration(ctx, domain, url.Values{"action": {"init"}})
 	if err != nil {
 		return nil, fmt.Errorf("扫码初始化失败: %w", err)

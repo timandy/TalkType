@@ -1,7 +1,7 @@
 // Package feishu 是飞书消息来源：扫码创建机器人（或使用手动填写的凭证），
 // 通过长连接（WebSocket）接收机器人单聊里的文本消息，键入成功后确认，并可选回一条回执。
 //
-// 不依赖飞书 SDK：WebSocket 客户端和帧编解码都在本包里手写。
+// 不依赖飞书 SDK：帧编解码在本包里手写，WebSocket 客户端用 internal/ws。
 package feishu
 
 import (
@@ -23,6 +23,7 @@ import (
 	"wetype/internal/config"
 	"wetype/internal/relay"
 	"wetype/internal/store"
+	"wetype/internal/ws"
 )
 
 const (
@@ -63,7 +64,6 @@ type Client struct {
 
 	// 当前使用的凭证。
 	appID, appSecret, domain, owner string
-	fromConfig                      bool
 
 	tokenMu     sync.Mutex
 	tenantToken string
@@ -89,7 +89,7 @@ func NewClient(cfg *config.Config, st *store.FeishuStore, acked *store.AckedIDs,
 		acked:        acked,
 		logger:       logger,
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
-		wsRT:         newWSTransport(),
+		wsRT:         ws.NewTransport(),
 		accountsBase: defaultAccountsBase,
 		openBase:     defaultOpenBase,
 		sleep:        sleepCtx,
@@ -133,7 +133,7 @@ func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
 					return nil
 				}
 				if errors.Is(err, errScanUnavailable) {
-					return fmt.Errorf("%w，请在 config.json 的 feishu.app_id 和 feishu.app_secret 中手动填写飞书应用凭证", err)
+					return err
 				}
 				c.logger.Printf("登录失败: %v，%s 后重试", err, backoff)
 				_ = c.sleep(ctx, backoff+jitter(backoff))
@@ -148,9 +148,6 @@ func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
 			return nil
 		}
 		if errors.Is(err, errBadCredentials) {
-			if c.fromConfig {
-				return fmt.Errorf("config.json 中的 feishu.app_id / feishu.app_secret 无效: %w", err)
-			}
 			c.logger.Printf("%v，清除本地凭证并重新扫码", err)
 			c.store.ClearCredentials()
 			if err := c.store.Save(); err != nil {
@@ -166,30 +163,20 @@ func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
 	}
 }
 
-// loadCredentials 依次使用 config.json 中的凭证、凭证文件中保存的凭证，都没有时扫码创建。
+// loadCredentials 使用凭证文件中保存的凭证，没有时扫码创建。凭证不支持手动填写。
 func (c *Client) loadCredentials(ctx context.Context) error {
 	// 换了应用就不能再用旧应用的访问凭证发回执。
 	c.tokenMu.Lock()
 	c.tenantToken, c.tokenExpiry = "", time.Time{}
 	c.tokenMu.Unlock()
 
-	if c.cfg.Feishu.AppID != "" {
-		c.appID, c.appSecret, c.domain = c.cfg.Feishu.AppID, c.cfg.Feishu.AppSecret, c.cfg.Feishu.Domain
-		c.owner, c.fromConfig = "", true
-		c.logger.Printf("使用 config.json 中的飞书应用凭证 app_id=%s", c.appID)
-		if len(c.cfg.Feishu.AllowedSenders) == 0 {
-			c.logger.Println("警告：未配置 feishu.allowed_senders，任何能私聊该机器人的人都可以向本机键入文字；" +
-				"建议把自己的 open_id 填入白名单（收到消息时日志里的 from= 就是 open_id）")
-		}
-		return nil
-	}
 	if id, secret, domain, owner := c.store.Credentials(); id != "" && secret != "" {
 		if domain == "" {
-			domain = c.cfg.Feishu.Domain
+			domain = config.FeishuDomain
 		}
-		c.appID, c.appSecret, c.domain, c.owner, c.fromConfig = id, secret, domain, owner, false
-		if owner == "" && len(c.cfg.Feishu.AllowedSenders) == 0 {
-			c.logger.Println("警告：凭证文件中没有扫码人的 open_id，且未配置 feishu.allowed_senders，将接受任何人的消息")
+		c.appID, c.appSecret, c.domain, c.owner = id, secret, domain, owner
+		if owner == "" {
+			c.logger.Println("警告：凭证文件中没有扫码人的 open_id，不会键入任何消息；请用 -relogin 重新扫码")
 		}
 		return nil
 	}
@@ -201,7 +188,7 @@ func (c *Client) loadCredentials(ctx context.Context) error {
 	if err := c.store.Save(); err != nil {
 		return fmt.Errorf("保存飞书凭证失败: %w", err)
 	}
-	c.appID, c.appSecret, c.domain, c.owner, c.fromConfig = res.AppID, res.AppSecret, res.Domain, res.OpenID, false
+	c.appID, c.appSecret, c.domain, c.owner = res.AppID, res.AppSecret, res.Domain, res.OpenID
 	c.logger.Printf("扫码成功，已创建机器人 app_id=%s，凭证已保存到 %s", res.AppID, c.store.Path())
 	return nil
 }
@@ -266,7 +253,7 @@ func (c *Client) session(ctx context.Context, onHealthy func()) error {
 		}
 	}
 
-	conn, err := dialWS(ctx, c.wsRT, wsURL)
+	conn, err := ws.Dial(ctx, c.wsRT, wsURL)
 	if err != nil {
 		return err
 	}
@@ -297,7 +284,7 @@ func (c *Client) session(ctx context.Context, onHealthy func()) error {
 			return err
 		}
 		lastRecv.Store(time.Now().UnixNano())
-		if op != opBinary {
+		if op != ws.OpBinary {
 			continue
 		}
 		f, err := decodeFrame(data)
@@ -315,7 +302,7 @@ func (c *Client) session(ctx context.Context, onHealthy func()) error {
 }
 
 // pingLoop 定时发送心跳，并在长时间收不到任何帧时关闭连接触发重连（dead 记录原因）。
-func (c *Client) pingLoop(ctx context.Context, conn *wsConn, serviceID int32, ping, lastRecv *atomic.Int64, dead *atomic.Bool) {
+func (c *Client) pingLoop(ctx context.Context, conn *ws.Conn, serviceID int32, ping, lastRecv *atomic.Int64, dead *atomic.Bool) {
 	for {
 		interval := time.Duration(ping.Load())
 		if err := sleepCtx(ctx, interval); err != nil {
@@ -348,7 +335,7 @@ func (c *Client) handleControl(f *frame, ping *atomic.Int64) {
 }
 
 // handleData 收齐分片后处理事件，并把处理结果回给飞书。
-func (c *Client) handleData(ctx context.Context, conn *wsConn, f *frame) {
+func (c *Client) handleData(ctx context.Context, conn *ws.Conn, f *frame) {
 	if f.header(headerType) != typeEvent {
 		return
 	}
@@ -550,15 +537,9 @@ func (c *Client) markAcked(id string) {
 	}
 }
 
-// senderAllowed：配置了白名单时按白名单；否则只接受扫码人本人；都不知道时接受所有人。
+// senderAllowed 只接受扫码人本人。
 func (c *Client) senderAllowed(openID string) bool {
-	if list := c.cfg.Feishu.AllowedSenders; len(list) > 0 {
-		return containsString(list, openID)
-	}
-	if c.owner != "" {
-		return openID == c.owner
-	}
-	return true
+	return openID != "" && openID == c.owner
 }
 
 // ---------------------------------------------------------------------------

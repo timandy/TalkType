@@ -40,8 +40,30 @@ const (
 var ErrSessionExpired = errors.New("ilink 会话已过期")
 
 // Client 封装 iLink Bot API 的登录、长轮询与发送逻辑。
+// settings 是微信来源的内置参数，不在 config.json 里配置。
+type settings struct {
+	baseURL        string        // iLink Bot API 地址；登录后服务端可能下发独立的 baseurl，存在凭证文件里
+	botType        string        // 扫码登录的 bot 类型
+	channelVersion string        // base_info.channel_version，随官方插件升级
+	qrPollInterval time.Duration // 扫码状态轮询间隔
+	pollTimeout    time.Duration // getupdates 长轮询超时，服务端可能下发新的值
+	httpTimeout    time.Duration // 单次 HTTP 超时，需大于长轮询超时
+	sign           bool          // 是否附加 HMAC-SHA256 签名头（密钥取自 bot_token）
+}
+
+var defaultSettings = settings{
+	baseURL:        "https://ilinkai.weixin.qq.com",
+	botType:        "3",
+	channelVersion: "2.1.6",
+	qrPollInterval: 2 * time.Second,
+	pollTimeout:    35 * time.Second,
+	httpTimeout:    45 * time.Second,
+	sign:           true,
+}
+
 type Client struct {
 	cfg        *config.Config
+	set        settings
 	store      *store.TokenStore
 	acked      *store.AckedIDs
 	logger     *log.Logger
@@ -54,14 +76,14 @@ func NewClient(cfg *config.Config, st *store.TokenStore, acked *store.AckedIDs, 
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Client{cfg: cfg, store: st, acked: acked, logger: logger, httpClient: &http.Client{}}
+	return &Client{cfg: cfg, set: defaultSettings, store: st, acked: acked, logger: logger, httpClient: &http.Client{}}
 }
 
 func (c *Client) baseURL() string {
 	if b := c.store.Base(); b != "" {
 		return strings.TrimRight(b, "/")
 	}
-	return strings.TrimRight(c.cfg.WeChat.BaseURL, "/")
+	return strings.TrimRight(c.set.baseURL, "/")
 }
 
 func (c *Client) doPost(ctx context.Context, endpoint string, payload any, timeout time.Duration) ([]byte, error) {
@@ -134,13 +156,10 @@ func (c *Client) doGet(ctx context.Context, rawURL string, out any, timeout time
 //	canonical = METHOD \n PATH \n TIMESTAMP \n NONCE \n SHA256(body)
 //	signature = "v1=" + base64(HMAC-SHA256(secret, canonical))
 func (c *Client) signRequest(req *http.Request, body []byte) {
-	if !c.cfg.WeChat.Signature.Enabled {
+	if !c.set.sign {
 		return
 	}
-	secret := strings.TrimSpace(c.cfg.WeChat.Signature.Secret)
-	if secret == "" {
-		secret = tokenSecret(c.store.Token())
-	}
+	secret := tokenSecret(c.store.Token())
 	if secret == "" {
 		return
 	}
@@ -174,8 +193,8 @@ func tokenSecret(token string) string {
 // ---------------------------------------------------------------------------
 
 func (c *Client) login(ctx context.Context) error {
-	loginBase := strings.TrimRight(c.cfg.WeChat.BaseURL, "/")
-	interval := time.Duration(c.cfg.WeChat.QRPollIntervalMS) * time.Millisecond
+	loginBase := strings.TrimRight(c.set.baseURL, "/")
+	interval := c.set.qrPollInterval
 
 outer:
 	for {
@@ -184,7 +203,7 @@ outer:
 		}
 
 		var qr QRCodeResponse
-		qrURL := loginBase + "/ilink/bot/get_bot_qrcode?bot_type=" + url.QueryEscape(c.cfg.WeChat.BotType)
+		qrURL := loginBase + "/ilink/bot/get_bot_qrcode?bot_type=" + url.QueryEscape(c.set.botType)
 		if err := c.doGet(ctx, qrURL, &qr, 20*time.Second); err != nil {
 			return fmt.Errorf("获取登录二维码失败: %w", err)
 		}
@@ -308,7 +327,7 @@ func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
 }
 
 func (c *Client) pollLoop(ctx context.Context, onHealthy func()) error {
-	pollTimeout := time.Duration(c.cfg.WeChat.Poll.TimeoutSeconds) * time.Second
+	pollTimeout := c.set.pollTimeout
 
 	for {
 		resp, err := c.getUpdates(ctx, c.store.Buf(), pollTimeout)
@@ -353,13 +372,13 @@ func (c *Client) pollLoop(ctx context.Context, onHealthy func()) error {
 }
 
 func (c *Client) getUpdates(ctx context.Context, buf string, pollTimeout time.Duration) (*GetUpdatesResp, error) {
-	httpTimeout := time.Duration(c.cfg.WeChat.Poll.HTTPTimeoutSeconds) * time.Second
+	httpTimeout := c.set.httpTimeout
 	if httpTimeout <= pollTimeout {
 		httpTimeout = pollTimeout + 10*time.Second
 	}
 	req := GetUpdatesReq{
 		GetUpdatesBuf: buf,
-		BaseInfo:      &BaseInfo{ChannelVersion: c.cfg.WeChat.ChannelVersion},
+		BaseInfo:      &BaseInfo{ChannelVersion: c.set.channelVersion},
 	}
 	data, err := c.doPost(ctx, "ilink/bot/getupdates", req, httpTimeout)
 	if err != nil {
@@ -441,17 +460,11 @@ func (c *Client) markAcked(key int64) {
 	}
 }
 
+// senderAllowed 只接受扫码人本人（登录时返回的 ilink_user_id，与消息的 from_user_id 是同一套 ID）。
+// 与微信官方插件 @tencent-weixin/openclaw-weixin 一致：凭证里没有扫码人时接受所有人。
 func (c *Client) senderAllowed(userID string) bool {
-	allowed := c.cfg.WeChat.AllowedSenders
-	if len(allowed) == 0 {
-		return true
-	}
-	for _, v := range allowed {
-		if v == userID {
-			return true
-		}
-	}
-	return false
+	owner := c.store.Owner()
+	return owner == "" || userID == owner
 }
 
 func (c *Client) sendText(ctx context.Context, to, text, contextToken string) error {
@@ -467,7 +480,7 @@ func (c *Client) sendText(ctx context.Context, to, text, contextToken string) er
 				TextItem: &TextItem{Text: text},
 			}},
 		},
-		BaseInfo: &BaseInfo{ChannelVersion: c.cfg.WeChat.ChannelVersion},
+		BaseInfo: &BaseInfo{ChannelVersion: c.set.channelVersion},
 	}
 	_, err := c.doPost(ctx, "ilink/bot/sendmessage", req, 15*time.Second)
 	return err

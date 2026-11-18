@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,52 +18,30 @@ func writeConfig(t *testing.T, data string) string {
 	return p
 }
 
-func TestLoad_NotExist(t *testing.T) {
-	_, err := Load(filepath.Join(t.TempDir(), "missing.json"))
-	if err == nil {
-		t.Fatal("expected error for missing file")
+// 配置文件不存在时使用默认配置。
+func TestLoad_NotExistUsesDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
+	if !errors.Is(err, ErrNotFound) || cfg == nil {
+		t.Fatalf("cfg=%v err=%v", cfg, err)
 	}
-}
-
-func TestLoad_InvalidJSON(t *testing.T) {
-	if _, err := Load(writeConfig(t, "{bad")); err == nil {
-		t.Fatal("expected parse error")
-	}
-}
-
-// 仓库根目录的 config.json 必须能被加载，且与默认值一致。
-func TestLoad_RepoConfigMatchesDefaults(t *testing.T) {
-	cfg, err := Load(filepath.Join("..", "..", "config.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := defaults()
-	// 示例里写的是空数组，默认值是 nil，含义相同
-	want.WeChat.AllowedSenders, want.Feishu.AllowedSenders = []string{}, []string{}
-	if !reflect.DeepEqual(cfg, want) {
-		t.Errorf("config.json differs from defaults:\n got %+v\nwant %+v", cfg, want)
+	if !reflect.DeepEqual(cfg, defaults()) {
+		t.Errorf("cfg = %+v", cfg)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLoad_KeepsDefaultsAndOverrides(t *testing.T) {
-	cfg, err := Load(writeConfig(t, `{"source":"Feishu","wechat":{"base_url":"https://example.com","poll":{"timeout_seconds":10},"allowed_senders":["a"]},"feishu":{"app_id":"cli","app_secret":"s"}}`))
-	if err != nil {
-		t.Fatal(err)
+func TestDefault(t *testing.T) {
+	c := Default()
+	if c.Source != SourceWeChat || !c.Login.AutoOpenQR || c.Ack.MaxAckedIDs != defaultMaxAckedIDs {
+		t.Errorf("Default() = %+v", c)
 	}
-	if cfg.Source != "Feishu" || cfg.WeChat.BaseURL != "https://example.com" || cfg.WeChat.Poll.TimeoutSeconds != 10 {
-		t.Errorf("overrides not applied: %+v", cfg)
-	}
-	// 未出现的字段保留默认值，包括同一对象里没写的字段
-	if cfg.WeChat.BotType != defaultBotType || cfg.WeChat.Poll.HTTPTimeoutSeconds != 45 || !cfg.WeChat.Signature.Enabled ||
-		cfg.Reconnect.MaxDelayMS != 60000 || !cfg.Inject.PressEnter || !cfg.Login.AutoOpenQR ||
-		cfg.Feishu.Domain != FeishuDomain || cfg.Feishu.TokenFile != defaultFeishuTokenFile {
-		t.Errorf("defaults not preserved: %+v", cfg)
-	}
-	if len(cfg.WeChat.AllowedSenders) != 1 || cfg.WeChat.AllowedSenders[0] != "a" {
-		t.Errorf("AllowedSenders = %v", cfg.WeChat.AllowedSenders)
+}
+
+func TestLoad_InvalidJSON(t *testing.T) {
+	if _, err := Load(writeConfig(t, "{bad")); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -73,15 +52,51 @@ func TestLoad_IgnoresUTF8BOM(t *testing.T) {
 	}
 }
 
-func TestLoad_RejectsUnknownField(t *testing.T) {
-	_, err := Load(writeConfig(t, `{"wechat":{"base_ulr":"https://x"}}`))
-	if err == nil || !strings.Contains(err.Error(), "base_ulr") {
-		t.Fatalf("err = %v", err)
+// 仓库根目录的 config.json 必须能被加载，且与默认值一致。
+func TestLoad_RepoConfigMatchesDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg, defaults()) {
+		t.Errorf("config.json differs from defaults:\n got %+v\nwant %+v", cfg, defaults())
+	}
+}
+
+func TestLoad_KeepsDefaultsAndOverrides(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"source":"Feishu","inject":{"press_enter":false},"reconnect":{"min_delay_ms":500}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Source != "Feishu" || cfg.Inject.PressEnter || cfg.Reconnect.MinDelayMS != 500 {
+		t.Errorf("overrides not applied: %+v", cfg)
+	}
+	// 未出现的字段保留默认值，包括同一对象里没写的字段
+	if cfg.Inject.TypeDelayMS != 60 || cfg.Inject.MaxRetries != 5 || cfg.Reconnect.MaxDelayMS != 60000 ||
+		!cfg.Login.AutoOpenQR || cfg.Ack.MaxAckedIDs != defaultMaxAckedIDs {
+		t.Errorf("defaults not preserved: %+v", cfg)
+	}
+}
+
+// 各来源的地址、协议参数内置；凭证、白名单、站点由扫码自动获得。写了这些字段会被当成未知字段拒绝。
+func TestLoad_RejectsSourceSpecificFields(t *testing.T) {
+	for _, data := range []string{
+		`{"wechat":{"base_url":"https://x"}}`,
+		`{"wechat":{"token":"a:b"}}`,
+		`{"feishu":{"app_id":"cli"}}`,
+		`{"feishu":{"domain":"lark"}}`,
+		`{"wecom":{"bot_id":"b"}}`,
+		`{"wecom":{"ws_url":"wss://x"}}`,
+		`{"filter":{"allowed_senders":["u"]}}`,
+	} {
+		if _, err := Load(writeConfig(t, data)); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Errorf("%s: err = %v", data, err)
+		}
 	}
 }
 
 func TestValidate_Source(t *testing.T) {
-	for in, want := range map[string]string{"": SourceWeChat, " WeChat ": SourceWeChat, "FEISHU": SourceFeishu, "Console": SourceConsole} {
+	for in, want := range map[string]string{"": SourceWeChat, " WeChat ": SourceWeChat, "FEISHU": SourceFeishu, "WeCom": SourceWeCom, "Console": SourceConsole} {
 		c := defaults()
 		c.Source = in
 		if err := c.Validate(); err != nil || c.Source != want {
@@ -95,79 +110,26 @@ func TestValidate_Source(t *testing.T) {
 	}
 }
 
-// 只校验正在使用的来源。
-func TestValidate_OnlyActiveSource(t *testing.T) {
-	c := defaults()
-	c.WeChat.BaseURL = " "
-	c.Feishu.AppID = "cli" // 缺 app_secret
-	c.Source = SourceConsole
-	if err := c.Validate(); err != nil {
-		t.Errorf("console should ignore wechat/feishu errors: %v", err)
-	}
-	c.Source = SourceWeChat
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "wechat.base_url") {
-		t.Errorf("wechat: err = %v", err)
-	}
-	c.Source = SourceFeishu
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "feishu.app_id") {
-		t.Errorf("feishu: err = %v", err)
-	}
-}
-
 func TestValidate_FillsZeroValues(t *testing.T) {
-	c := &Config{WeChat: WeChatConfig{BaseURL: " https://x.com/// "}}
+	c := &Config{}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	checks := []struct {
-		name      string
-		got, want any
-	}{
-		{"Source", c.Source, SourceWeChat},
-		{"WeChat.BaseURL", c.WeChat.BaseURL, "https://x.com"},
-		{"WeChat.BotType", c.WeChat.BotType, defaultBotType},
-		{"WeChat.ChannelVersion", c.WeChat.ChannelVersion, defaultChannelVersion},
-		{"WeChat.TokenFile", c.WeChat.TokenFile, defaultWeChatTokenFile},
-		{"WeChat.QRPollIntervalMS", c.WeChat.QRPollIntervalMS, defaultQRPollMS},
-		{"WeChat.Poll.TimeoutSeconds", c.WeChat.Poll.TimeoutSeconds, 35},
-		{"WeChat.Poll.HTTPTimeoutSeconds", c.WeChat.Poll.HTTPTimeoutSeconds, 45},
-		{"Reconnect.MinDelayMS", c.Reconnect.MinDelayMS, 1000},
-		{"Reconnect.MaxDelayMS", c.Reconnect.MaxDelayMS, 1000},
-		{"Inject.MaxRetries", c.Inject.MaxRetries, 1},
-		{"Ack.MaxAckedIDs", c.Ack.MaxAckedIDs, defaultMaxAckedIDs},
-		{"Feishu.Domain", c.Feishu.Domain, FeishuDomain},
-		{"Feishu.TokenFile", c.Feishu.TokenFile, defaultFeishuTokenFile},
-	}
-	for _, tc := range checks {
-		if tc.got != tc.want {
-			t.Errorf("%s = %v, want %v", tc.name, tc.got, tc.want)
-		}
+	if c.Source != SourceWeChat || c.Reconnect.MinDelayMS != 1000 || c.Reconnect.MaxDelayMS != 1000 ||
+		c.Inject.MaxRetries != 1 || c.Ack.MaxAckedIDs != defaultMaxAckedIDs {
+		t.Errorf("zero values not filled: %+v", c)
 	}
 }
 
 func TestValidate_KeepsValidValues(t *testing.T) {
 	c := defaults()
-	c.WeChat.Poll.TimeoutSeconds = 20
-	c.WeChat.Poll.HTTPTimeoutSeconds = 60
 	c.Reconnect.MinDelayMS = 500
 	c.Reconnect.MaxDelayMS = 5000
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if c.WeChat.Poll.HTTPTimeoutSeconds != 60 || c.Reconnect.MaxDelayMS != 5000 || c.Reconnect.MinDelayMS != 500 {
+	if c.Reconnect.MaxDelayMS != 5000 || c.Reconnect.MinDelayMS != 500 {
 		t.Errorf("valid values changed: %+v", c)
-	}
-}
-
-func TestValidate_HTTPTimeoutMustExceedPollTimeout(t *testing.T) {
-	c := defaults()
-	c.WeChat.Poll.TimeoutSeconds = 30
-	c.WeChat.Poll.HTTPTimeoutSeconds = 30
-	if err := c.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if c.WeChat.Poll.HTTPTimeoutSeconds != 40 {
-		t.Errorf("HTTPTimeoutSeconds = %d, want 40", c.WeChat.Poll.HTTPTimeoutSeconds)
 	}
 }
 
@@ -180,18 +142,5 @@ func TestValidate_MaxDelayRaisedToMin(t *testing.T) {
 	}
 	if c.Reconnect.MaxDelayMS != 3000 {
 		t.Errorf("MaxDelayMS = %d, want 3000", c.Reconnect.MaxDelayMS)
-	}
-}
-
-func TestValidate_Feishu(t *testing.T) {
-	c := &Config{Source: SourceFeishu, Feishu: FeishuConfig{Domain: " Lark ", AppID: " cli ", AppSecret: " s "}}
-	if err := c.Validate(); err != nil || c.Feishu.Domain != LarkDomain || c.Feishu.AppID != "cli" || c.Feishu.AppSecret != "s" {
-		t.Errorf("normalize: %+v err=%v", c.Feishu, err)
-	}
-	for _, f := range []FeishuConfig{{Domain: "wechat"}, {AppID: "cli"}, {AppSecret: "s"}} {
-		c := &Config{Source: SourceFeishu, Feishu: f}
-		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "feishu") {
-			t.Errorf("%+v: err = %v", f, err)
-		}
 	}
 }

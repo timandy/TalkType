@@ -23,19 +23,9 @@ import (
 	"wetype/internal/store"
 )
 
-func newTestClient(t *testing.T, mutate func(*config.Config)) *Client {
+func newTestClient(t *testing.T, mutate func(*Client)) *Client {
 	t.Helper()
-	cfg := &config.Config{
-		WeChat: config.WeChatConfig{
-			BaseURL:        "https://default.example.com/",
-			ChannelVersion: "1.0",
-			Signature:      config.SignatureConfig{Enabled: true, Secret: "s3cret"},
-		},
-		Ack: config.AckConfig{MaxAckedIDs: 10},
-	}
-	if mutate != nil {
-		mutate(cfg)
-	}
+	cfg := &config.Config{Ack: config.AckConfig{MaxAckedIDs: 10}}
 	st, err := store.Load(filepath.Join(t.TempDir(), "token.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +34,13 @@ func newTestClient(t *testing.T, mutate func(*config.Config)) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewClient(cfg, st, acked, log.New(io.Discard, "", 0))
+	c := NewClient(cfg, st, acked, log.New(io.Discard, "", 0))
+	c.set.baseURL = "https://default.example.com/"
+	c.set.channelVersion = "1.0"
+	if mutate != nil {
+		mutate(c)
+	}
+	return c
 }
 
 func textMsg(text string) []MessageItem {
@@ -97,11 +93,11 @@ func TestTokenSecret(t *testing.T) {
 func TestSenderAllowed(t *testing.T) {
 	c := newTestClient(t, nil)
 	if !c.senderAllowed("anyone") {
-		t.Error("empty whitelist should allow everyone")
+		t.Error("no scanner recorded (legacy credentials): should allow everyone, like the official plugin")
 	}
-	c = newTestClient(t, func(cfg *config.Config) { cfg.WeChat.AllowedSenders = []string{"a", "b"} })
-	if !c.senderAllowed("a") || c.senderAllowed("c") {
-		t.Error("whitelist not enforced")
+	c.store.SetSession("tok", "bot", "me", "")
+	if !c.senderAllowed("me") || c.senderAllowed("other") {
+		t.Error("only the scanner should be allowed")
 	}
 }
 
@@ -133,6 +129,7 @@ func TestSignRequest(t *testing.T) {
 
 	t.Run("signature matches canonical form", func(t *testing.T) {
 		c := newTestClient(t, nil)
+		c.store.SetSession("bot:s3cret", "", "", "") // 密钥取 bot_token 最后一个冒号之后的部分
 		req, _ := http.NewRequest(http.MethodPost, "https://x.com/ilink/bot/getupdates", nil)
 		c.signRequest(req, body)
 
@@ -151,7 +148,7 @@ func TestSignRequest(t *testing.T) {
 	})
 
 	t.Run("disabled", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.Signature.Enabled = false })
+		c := newTestClient(t, func(c *Client) { c.set.sign = false })
 		req, _ := http.NewRequest(http.MethodPost, "https://x.com/p", nil)
 		c.signRequest(req, body)
 		if req.Header.Get("X-ILink-Signature") != "" {
@@ -159,22 +156,12 @@ func TestSignRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("no secret and no token", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.Signature.Secret = "  " })
+	t.Run("no token", func(t *testing.T) {
+		c := newTestClient(t, nil)
 		req, _ := http.NewRequest(http.MethodPost, "https://x.com/p", nil)
 		c.signRequest(req, body)
 		if req.Header.Get("X-ILink-Signature") != "" {
-			t.Error("should not sign without secret")
-		}
-	})
-
-	t.Run("falls back to token secret", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.Signature.Secret = "" })
-		c.store.SetSession("bot:tokensecret", "", "", "")
-		req, _ := http.NewRequest(http.MethodPost, "https://x.com/p", nil)
-		c.signRequest(req, body)
-		if req.Header.Get("X-ILink-Signature") == "" {
-			t.Error("expected signature from token secret")
+			t.Error("should not sign without token")
 		}
 	})
 }
@@ -189,7 +176,7 @@ func TestDoPost(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL })
 	c.store.SetSession("mytoken", "", "", "")
 	data, err := c.doPost(context.Background(), "/ilink/bot/x", map[string]int{"k": 1}, time.Second)
 	if err != nil {
@@ -214,7 +201,7 @@ func TestDoPost_StatusErrors(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte("nope"))
 		}))
-		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
+		c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL })
 		_, err := c.doPost(context.Background(), "p", struct{}{}, time.Second)
 		srv.Close()
 		if err == nil {
@@ -256,7 +243,7 @@ func TestGetUpdates(t *testing.T) {
 		_, _ = w.Write([]byte(`{"get_updates_buf":"nb","msgs":[{"from_user_id":"u","message_id":3}]}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL; cfg.WeChat.Poll.HTTPTimeoutSeconds = 5 })
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL; c.set.httpTimeout = 5 * time.Second })
 
 	resp, err := c.getUpdates(context.Background(), "oldbuf", time.Second)
 	if err != nil {
@@ -284,7 +271,7 @@ func TestGetUpdates_InvalidJSON(t *testing.T) {
 		_, _ = w.Write([]byte("not json"))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL })
 	if _, err := c.getUpdates(context.Background(), "", time.Second); err == nil {
 		t.Error("expected parse error")
 	}
@@ -299,7 +286,7 @@ func TestSendText(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL })
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL })
 
 	if err := c.sendText(context.Background(), "user1", "pong", "ctx"); err != nil {
 		t.Fatal(err)
@@ -360,8 +347,9 @@ func TestHandleMessage_SkipsWithoutTyping(t *testing.T) {
 		}
 	})
 
-	t.Run("sender not in whitelist", func(t *testing.T) {
-		c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.AllowedSenders = []string{"vip"} })
+	t.Run("sender is not the scanner", func(t *testing.T) {
+		c := newTestClient(t, nil)
+		c.store.SetSession("tok", "bot", "vip", "")
 		if !c.handleMessage(ctx, &WeixinMessage{MessageType: msgTypeUser, FromUserID: "other", MessageID: 2, ItemList: textMsg("x")}) {
 			t.Error("want true")
 		}
@@ -387,10 +375,10 @@ func TestPollLoop_SessionExpiredAndErrors(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
-			c := newTestClient(t, func(cfg *config.Config) {
-				cfg.WeChat.BaseURL = srv.URL
-				cfg.WeChat.Poll.TimeoutSeconds = 1
-				cfg.WeChat.Poll.HTTPTimeoutSeconds = 5
+			c := newTestClient(t, func(c *Client) {
+				c.set.baseURL = srv.URL
+				c.set.pollTimeout = time.Second
+				c.set.httpTimeout = 5 * time.Second
 			})
 			healthy := false
 			err := c.pollLoop(context.Background(), func() { healthy = true })
@@ -416,10 +404,10 @@ func TestPollLoop_AdvancesCursorAndPersists(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ret":-14}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) {
-		cfg.WeChat.BaseURL = srv.URL
-		cfg.WeChat.Poll.TimeoutSeconds = 1
-		cfg.WeChat.Poll.HTTPTimeoutSeconds = 5
+	c := newTestClient(t, func(c *Client) {
+		c.set.baseURL = srv.URL
+		c.set.pollTimeout = time.Second
+		c.set.httpTimeout = 5 * time.Second
 	})
 
 	healthy := 0
@@ -497,7 +485,7 @@ func TestHandleMessage_SendsReplyAfterDelivery(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL; cfg.Ack.ReplyText = " 收到 " })
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL; c.cfg.Ack.ReplyText = " 收到 " })
 	c.handle = (&recorder{}).handle
 	if !c.handleMessage(context.Background(), userMsg(1, "hello")) {
 		t.Fatal("want true")
@@ -534,7 +522,7 @@ func TestHandleMessage_NonTextIsLoggedOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 	var logBuf strings.Builder
-	c := newTestClient(t, func(cfg *config.Config) { cfg.WeChat.BaseURL = srv.URL; cfg.Ack.ReplyText = "收到" })
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = srv.URL; c.cfg.Ack.ReplyText = "收到" })
 	c.logger = log.New(&logBuf, "", 0)
 	rec := &recorder{}
 	c.handle = rec.handle

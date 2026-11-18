@@ -1,4 +1,5 @@
-package feishu
+// Package ws 是最小的 WebSocket 客户端（RFC 6455），供飞书、企业微信等长连接来源共用。
+package ws
 
 import (
 	"context"
@@ -24,27 +25,27 @@ import (
 const (
 	wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-	opContinuation = 0x0
-	opText         = 0x1
-	opBinary       = 0x2
-	opClose        = 0x8
-	opPing         = 0x9
-	opPong         = 0xA
+	OpContinuation = 0x0
+	OpText         = 0x1
+	OpBinary       = 0x2
+	OpClose        = 0x8
+	OpPing         = 0x9
+	OpPong         = 0xA
 
 	maxMessageSize = 16 << 20 // 单条消息上限，防止异常数据耗尽内存
 )
 
-// errWSClosed 表示连接已关闭（对方发送了 close 帧或本地已关闭）。
-var errWSClosed = errors.New("websocket 连接已关闭")
+// ErrClosed 表示连接已关闭（对方发送了 close 帧或本地已关闭）。
+var ErrClosed = errors.New("websocket 连接已关闭")
 
-// handshakeError 是握手被拒绝的错误，带上服务端返回的状态和说明。
-type handshakeError struct {
+// HandshakeError 是握手被拒绝的错误，带上服务端返回的状态和说明。
+type HandshakeError struct {
 	Status int
 	Header http.Header
 	Body   string
 }
 
-func (e *handshakeError) Error() string {
+func (e *HandshakeError) Error() string {
 	msg := fmt.Sprintf("websocket 握手失败: HTTP %d", e.Status)
 	if s := e.Header.Get("Handshake-Status"); s != "" {
 		msg += " handshake-status=" + s
@@ -58,7 +59,7 @@ func (e *handshakeError) Error() string {
 	return msg
 }
 
-type wsConn struct {
+type Conn struct {
 	rw io.ReadWriteCloser
 
 	wmu sync.Mutex // 写帧互斥：心跳和事件响应可能并发写
@@ -66,17 +67,18 @@ type wsConn struct {
 	closeOnce sync.Once
 }
 
-// newWSTransport 返回只走 HTTP/1.1 的 Transport：WebSocket 握手不能走 HTTP/2。
-func newWSTransport() *http.Transport {
+// NewTransport 返回只走 HTTP/1.1 的 Transport：WebSocket 握手不能走 HTTP/2。
+func NewTransport() *http.Transport {
 	return &http.Transport{
-		Proxy:             http.ProxyFromEnvironment,
-		ForceAttemptHTTP2: false,
-		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+		Proxy:              http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:  false,
+		DisableCompression: true, // 不自动加 Accept-Encoding: gzip
+		TLSNextProto:       map[string]func(string, *tls.Conn) http.RoundTripper{},
 	}
 }
 
-// dialWS 建立 WebSocket 连接。rawURL 为 ws:// 或 wss:// 地址。
-func dialWS(ctx context.Context, rt http.RoundTripper, rawURL string) (*wsConn, error) {
+// Dial 建立 WebSocket 连接。rawURL 为 ws:// 或 wss:// 地址。
+func Dial(ctx context.Context, rt http.RoundTripper, rawURL string) (*Conn, error) {
 	httpURL := rawURL
 	switch {
 	case strings.HasPrefix(rawURL, "wss://"):
@@ -97,10 +99,14 @@ func dialWS(ctx context.Context, rt http.RoundTripper, rawURL string) (*wsConn, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", key)
+	// 头名按 RFC 6455 的写法原样发送（Header.Set 会改成 Sec-Websocket-Key），不带 Go 默认的 User-Agent
+	// 和 Accept-Encoding，与官方 SDK（Node ws 库）发出的请求一致。实测企业微信长连接服务端对 Go 的默认请求
+	// 返回 404，并会临时屏蔽该 IP 的后续握手。
+	req.Header["Connection"] = []string{"Upgrade"}
+	req.Header["Upgrade"] = []string{"websocket"}
+	req.Header["Sec-WebSocket-Version"] = []string{"13"}
+	req.Header["Sec-WebSocket-Key"] = []string{key}
+	req.Header["User-Agent"] = []string{""} // 空值表示不发送
 
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
@@ -109,27 +115,28 @@ func dialWS(ctx context.Context, rt http.RoundTripper, rawURL string) (*wsConn, 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		resp.Body.Close()
-		return nil, &handshakeError{Status: resp.StatusCode, Header: resp.Header, Body: strings.TrimSpace(string(body))}
+		return nil, &HandshakeError{Status: resp.StatusCode, Header: resp.Header, Body: strings.TrimSpace(string(body))}
 	}
 	rw, ok := resp.Body.(io.ReadWriteCloser)
 	if !ok {
 		resp.Body.Close()
 		return nil, errors.New("websocket 握手成功，但无法取得底层连接")
 	}
-	if !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") || resp.Header.Get("Sec-WebSocket-Accept") != acceptKey(key) {
+	if !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") || resp.Header.Get("Sec-WebSocket-Accept") != AcceptKey(key) {
 		rw.Close()
 		return nil, errors.New("websocket 握手响应不合法")
 	}
-	return &wsConn{rw: rw}, nil
+	return &Conn{rw: rw}, nil
 }
 
-func acceptKey(key string) string {
+// AcceptKey 计算握手响应里的 Sec-WebSocket-Accept。
+func AcceptKey(key string) string {
 	h := sha1.Sum([]byte(key + wsGUID))
 	return base64.StdEncoding.EncodeToString(h[:])
 }
 
 // ReadMessage 读取一条完整消息（自动重组分片），并在内部处理 ping 和 close。
-func (c *wsConn) ReadMessage() (opcode byte, data []byte, err error) {
+func (c *Conn) ReadMessage() (opcode byte, data []byte, err error) {
 	var msgOp byte
 	var buf []byte
 	for {
@@ -138,23 +145,23 @@ func (c *wsConn) ReadMessage() (opcode byte, data []byte, err error) {
 			return 0, nil, err
 		}
 		switch op {
-		case opPing:
-			if err := c.writeFrame(opPong, payload); err != nil {
+		case OpPing:
+			if err := c.writeFrame(OpPong, payload); err != nil {
 				return 0, nil, err
 			}
 			continue
-		case opPong:
+		case OpPong:
 			continue
-		case opClose:
-			_ = c.writeFrame(opClose, closePayload(payload))
+		case OpClose:
+			_ = c.writeFrame(OpClose, closePayload(payload))
 			c.Close()
-			return 0, nil, fmt.Errorf("%w%s", errWSClosed, describeClose(payload))
-		case opText, opBinary:
+			return 0, nil, fmt.Errorf("%w%s", ErrClosed, describeClose(payload))
+		case OpText, OpBinary:
 			if msgOp != 0 {
 				return 0, nil, errors.New("websocket 协议错误：上一条分片消息未结束")
 			}
 			msgOp = op
-		case opContinuation:
+		case OpContinuation:
 			if msgOp == 0 {
 				return 0, nil, errors.New("websocket 协议错误：意外的续帧")
 			}
@@ -171,7 +178,7 @@ func (c *wsConn) ReadMessage() (opcode byte, data []byte, err error) {
 	}
 }
 
-func (c *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
+func (c *Conn) readFrame() (fin bool, op byte, payload []byte, err error) {
 	var h [2]byte
 	if _, err = io.ReadFull(c.rw, h[:]); err != nil {
 		return
@@ -198,7 +205,7 @@ func (c *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 		}
 		n = binary.BigEndian.Uint64(ext[:])
 	}
-	if op >= opClose && (n > 125 || !fin) {
+	if op >= OpClose && (n > 125 || !fin) {
 		err = errors.New("websocket 协议错误：控制帧过长或被分片")
 		return
 	}
@@ -225,12 +232,17 @@ func (c *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 }
 
 // WriteBinary 发送一条二进制消息。
-func (c *wsConn) WriteBinary(data []byte) error {
-	return c.writeFrame(opBinary, data)
+func (c *Conn) WriteBinary(data []byte) error {
+	return c.writeFrame(OpBinary, data)
+}
+
+// WriteText 发送一条文本消息（data 须为 UTF-8）。
+func (c *Conn) WriteText(data []byte) error {
+	return c.writeFrame(OpText, data)
 }
 
 // writeFrame 发送一个不分片的帧。客户端发出的帧必须加掩码。
-func (c *wsConn) writeFrame(op byte, payload []byte) error {
+func (c *Conn) writeFrame(op byte, payload []byte) error {
 	var mask [4]byte
 	if _, err := rand.Read(mask[:]); err != nil {
 		return err
@@ -262,7 +274,7 @@ func (c *wsConn) writeFrame(op byte, payload []byte) error {
 }
 
 // Close 关闭底层连接。可重复调用。
-func (c *wsConn) Close() error {
+func (c *Conn) Close() error {
 	var err error
 	c.closeOnce.Do(func() { err = c.rw.Close() })
 	return err
