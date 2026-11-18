@@ -9,6 +9,8 @@
 > 依赖 Windows Win32 API（`user32.dll` / `kernel32.dll`），只能在 Windows 上运行。
 > Linux / 云端环境只能编译与静态检查，无法验证真实键盘输入。
 
+![WeType 演示：手机语音输入，文字直达电脑窗口](docs/image/wetype-demo.gif)
+
 ## 特性
 
 - **三个来源**：微信（私聊）、飞书（机器人单聊）、企业微信（智能机器人单聊），另有调试用的控制台输入
@@ -254,7 +256,8 @@ wetype/
 │   ├── window-lock.md           锁定功能的原理与支持范围
 │   ├── wechat.md                微信来源的协议细节
 │   ├── feishu.md                飞书来源的协议细节与调研记录
-│   └── wecom.md                 企业微信来源的协议细节与调研记录
+│   ├── wecom.md                 企业微信来源的协议细节与调研记录
+│   └── image/                   README 演示动画（wetype-demo.gif）
 ├── config.json                  运行配置（可省略）
 ├── *_token.json                 运行后生成：各来源的凭证与本人身份
 ├── *_acked.ids                  运行后生成：已处理消息 ID，一行一个
