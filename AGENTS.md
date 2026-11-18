@@ -44,6 +44,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 | `internal/store` | 辅助：各来源的凭证与本人身份（`*_token.json`）和已处理消息 ID（`*_acked.ids`，一行一个，追加写入）。凭证和记录的读写只走这里。 |
 | `internal/ws` | 辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用；`wstest` 是测试用服务端。握手请求头需与官方 SDK 一致，见 `docs/wecom.md`。 |
 | `docs/window-lock.md` | 锁定功能的原理、支持范围、已知限制。 |
+| `docs/wechat.md` | 微信来源的请求头、签名、游标 ACK、会话过期和限制。 |
 | `docs/feishu.md` | 飞书来源的接口、长连接协议、处理规则和未实测项。 |
 | `docs/wecom.md` | 企业微信来源的接口、长连接协议、处理规则和未实测项。 |
 
@@ -60,7 +61,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 - **非文本消息**：只在控制台打印提示，不键入、不回复。
 - **飞书**：只处理机器人单聊；键入失败回 500 且不记为已处理，成功或按规则忽略回 200。不引入飞书 SDK，协议细节见 `docs/feishu.md`。
 - **企业微信**：只处理机器人单聊；必须先发配对码确认本人，配对前不键入任何消息；不需要逐条确认，键入失败不会重推。同一机器人在别处连上（`disconnected_event`）时退出，不重连。协议细节见 `docs/wecom.md`。
-- **签名**：HMAC-SHA256 `v1` 方案，默认开启，密钥取自 bot_token。canonical 串格式见 README「签名逻辑」，修改前先读。
+- **签名**：HMAC-SHA256 `v1` 方案，默认开启，密钥取自 bot_token。canonical 串格式见 `docs/wechat.md`「签名」，修改前先读。
 - **锁定**：终端后台直接写入，不切换窗口。其他窗口发送时短暂切换再切回。锁定目标关闭后丢弃消息并弹提示。
 
 ## 代码风格
@@ -73,7 +74,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 
 ## 修改文档
 
-- 用户可见行为变化（快捷键、参数、配置、限制）要同步更新 `README.md`。锁定相关的原理与限制同步更新 `docs/window-lock.md`。
+- 用户可见行为变化（快捷键、参数、配置、限制）要同步更新 `README.md`。锁定相关的原理与限制同步更新 `docs/window-lock.md`；各来源的协议细节分别在 `docs/wechat.md`、`docs/feishu.md`、`docs/wecom.md`。
 - README 末尾的「项目结构」需与实际文件保持一致。
 
 ## 许可证
