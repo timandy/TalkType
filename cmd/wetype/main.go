@@ -24,14 +24,15 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/console"
-	"wetype/internal/feishu"
-	"wetype/internal/ilink"
-	"wetype/internal/relay"
+	"wetype/internal/delivery"
+	"wetype/internal/delivery/winlock"
+	"wetype/internal/delivery/wintype"
+	"wetype/internal/source"
+	"wetype/internal/source/console"
+	"wetype/internal/source/feishu"
+	"wetype/internal/source/wechat"
+	"wetype/internal/source/wecom"
 	"wetype/internal/store"
-	"wetype/internal/wecom"
-	"wetype/internal/winlock"
-	"wetype/internal/wintype"
 )
 
 const consoleCursorDelay = 3 * time.Second
@@ -90,7 +91,7 @@ func main() {
 
 	winlock.SetLogger(logger)
 	locker := winlock.New()
-	var injector relay.Injector = relay.CursorInjector{}
+	var injector delivery.Injector = delivery.CursorInjector{}
 	toCursor := func() bool { return true }
 	if err := locker.Start(ctx); err != nil {
 		logger.Printf("锁定功能不可用，消息将始终输入到当前光标位置：%v", err)
@@ -100,7 +101,7 @@ func main() {
 		logger.Println("快捷键：Alt+. 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；Alt+/ 在任意位置解除锁定")
 	}
 
-	var src relay.Source
+	var src source.Source
 	switch cfg.Source {
 	case config.SourceWeChat:
 		src, err = newWeChatSource(cfg, *configPath, *relogin)
@@ -115,7 +116,7 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	deliverer := relay.NewDeliverer(injector, injectOptions(cfg))
+	deliverer := delivery.NewDeliverer(injector, injectOptions(cfg))
 	logger.Printf("消息来源: %s", src.Name())
 	if err := src.Run(ctx, deliverer.Deliver); err != nil && ctx.Err() == nil {
 		logger.Fatalf("运行中止: %v", err)
@@ -133,7 +134,7 @@ func injectOptions(cfg *config.Config) wintype.Options {
 }
 
 // newWeChatSource 加载凭证并创建微信来源。
-func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*ilink.Client, error) {
+func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*wechat.Client, error) {
 	tokenPath := resolvePath(configPath, wechatTokenFile)
 
 	st, err := store.Load(tokenPath)
@@ -152,7 +153,7 @@ func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*ilin
 	}
 	logger.Printf("凭证文件: %s", tokenPath)
 	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
-	return ilink.NewClient(cfg, st, acked, logger), nil
+	return wechat.NewClient(cfg, st, acked, logger), nil
 }
 
 // newFeishuSource 加载凭证并创建飞书来源。

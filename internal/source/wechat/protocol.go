@@ -1,4 +1,4 @@
-package ilink
+package wechat
 
 // iLink 协议结构，字段名与官方 getupdates / sendmessage 的 JSON 保持一致。
 

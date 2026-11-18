@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/relay"
+	"wetype/internal/source"
 )
 
 // Options 控制控制台来源的行为。
@@ -37,13 +37,13 @@ func New(in io.Reader, logger *log.Logger, opts Options) *Source {
 	return &Source{in: in, logger: logger, opts: opts}
 }
 
-var _ relay.Source = (*Source)(nil)
+var _ source.Source = (*Source)(nil)
 
-// Name 实现 relay.Source。
+// Name 实现 source.Source。
 func (s *Source) Name() string { return "控制台" }
 
-// Run 实现 relay.Source。输入结束（EOF）或 ctx 结束时返回。
-func (s *Source) Run(ctx context.Context, handle relay.Handler) error {
+// Run 实现 source.Source。输入结束（EOF）或 ctx 结束时返回。
+func (s *Source) Run(ctx context.Context, handle source.Handler) error {
 	s.logger.Println("消息来源：控制台。每输入一行并回车即发送一条消息，按 Ctrl+C 退出。")
 
 	lines := make(chan string)
@@ -90,11 +90,11 @@ func (s *Source) Run(ctx context.Context, handle relay.Handler) error {
 			}
 		}
 
-		err := handle(ctx, relay.Message{From: "控制台", Text: line})
+		err := handle(ctx, source.Message{From: "控制台", Text: line})
 		switch {
 		case err == nil:
 			s.logger.Printf("已发送：%s", line)
-		case errors.Is(err, relay.ErrDiscarded):
+		case errors.Is(err, source.ErrDiscarded):
 			s.logger.Println("消息未发送：锁定的目标已关闭。")
 		case ctx.Err() != nil:
 			return nil

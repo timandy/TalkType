@@ -1,11 +1,12 @@
-package relay
+package delivery
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"wetype/internal/wintype"
+	"wetype/internal/delivery/wintype"
+	"wetype/internal/source"
 )
 
 type fakeInjector struct {
@@ -27,7 +28,7 @@ func TestDeliver_Success(t *testing.T) {
 	inj := &fakeInjector{}
 	opts := wintype.Options{PressEnter: true, MaxRetries: 3}
 	d := NewDeliverer(inj, opts)
-	if err := d.Deliver(context.Background(), Message{From: "u", Text: "hi"}); err != nil {
+	if err := d.Deliver(context.Background(), source.Message{From: "u", Text: "hi"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(inj.texts) != 1 || inj.texts[0] != "hi" || inj.opts[0] != opts || len(inj.notices) != 0 {
@@ -37,8 +38,8 @@ func TestDeliver_Success(t *testing.T) {
 
 func TestDeliver_TargetClosedIsDiscarded(t *testing.T) {
 	inj := &fakeInjector{err: wintype.ErrTargetClosed}
-	err := NewDeliverer(inj, wintype.Options{}).Deliver(context.Background(), Message{Text: "hi"})
-	if !errors.Is(err, ErrDiscarded) || !errors.Is(err, wintype.ErrTargetClosed) {
+	err := NewDeliverer(inj, wintype.Options{}).Deliver(context.Background(), source.Message{Text: "hi"})
+	if !errors.Is(err, source.ErrDiscarded) || !errors.Is(err, wintype.ErrTargetClosed) {
 		t.Fatalf("err = %v", err)
 	}
 	if len(inj.notices) != 1 || inj.notices[0] != closedNoticeTitle {
@@ -49,8 +50,8 @@ func TestDeliver_TargetClosedIsDiscarded(t *testing.T) {
 func TestDeliver_OtherErrorPassesThrough(t *testing.T) {
 	boom := errors.New("boom")
 	inj := &fakeInjector{err: boom}
-	err := NewDeliverer(inj, wintype.Options{}).Deliver(context.Background(), Message{Text: "hi"})
-	if !errors.Is(err, boom) || errors.Is(err, ErrDiscarded) || len(inj.notices) != 0 {
+	err := NewDeliverer(inj, wintype.Options{}).Deliver(context.Background(), source.Message{Text: "hi"})
+	if !errors.Is(err, boom) || errors.Is(err, source.ErrDiscarded) || len(inj.notices) != 0 {
 		t.Errorf("err=%v notices=%v", err, inj.notices)
 	}
 }
@@ -59,7 +60,7 @@ func TestDeliver_CancelledContext(t *testing.T) {
 	inj := &fakeInjector{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := NewDeliverer(inj, wintype.Options{}).Deliver(ctx, Message{Text: "hi"}); !errors.Is(err, context.Canceled) {
+	if err := NewDeliverer(inj, wintype.Options{}).Deliver(ctx, source.Message{Text: "hi"}); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v", err)
 	}
 	if len(inj.texts) != 0 {

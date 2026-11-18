@@ -1,4 +1,4 @@
-package ilink
+package wechat
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/relay"
+	"wetype/internal/source"
 	"wetype/internal/store"
 )
 
@@ -425,11 +425,11 @@ func TestPollLoop_AdvancesCursorAndPersists(t *testing.T) {
 }
 
 type recorder struct {
-	msgs []relay.Message
+	msgs []source.Message
 	err  error
 }
 
-func (r *recorder) handle(_ context.Context, m relay.Message) error {
+func (r *recorder) handle(_ context.Context, m source.Message) error {
 	r.msgs = append(r.msgs, m)
 	return r.err
 }
@@ -469,7 +469,7 @@ func TestHandleMessage_DeliverFailureKeepsCursor(t *testing.T) {
 
 func TestHandleMessage_DiscardedIsAcked(t *testing.T) {
 	c := newTestClient(t, nil)
-	c.handle = (&recorder{err: fmt.Errorf("%w: closed", relay.ErrDiscarded)}).handle
+	c.handle = (&recorder{err: fmt.Errorf("%w: closed", source.ErrDiscarded)}).handle
 	if !c.handleMessage(context.Background(), userMsg(1, "hello")) {
 		t.Error("want true so the poll loop does not retry forever")
 	}

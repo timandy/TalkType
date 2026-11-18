@@ -32,24 +32,25 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 | 路径 | 职责 |
 | --- | --- |
 | `cmd/wetype/main.go` | 进程生命周期、参数、依赖装配。不放业务逻辑。 |
-| `internal/config` | 配置结构、默认值、校验。无内部依赖，可被任意层引用。 |
-| `internal/store` | 微信的 `bot_token`、游标、`context_token`，飞书的 App ID / Secret，企业微信的 Bot ID / Secret，以及已处理消息 ID 记录（`*_acked.ids`，一行一个，追加写入）。凭证和记录的读写只走这里。 |
-| `internal/relay` | 消息来源接口 `Source` 与投递器 `Deliverer`。 |
-| `internal/ilink` | 微信来源：签名、登录、长轮询、ACK、重连、sendmessage。 |
-| `internal/feishu` | 飞书来源：扫码创建机器人、长连接（手写 protobuf 帧）、事件处理、回执。只处理机器人单聊。 |
-| `internal/wecom` | 企业微信来源：扫码创建智能机器人、长连接（JSON 帧）、认证、心跳、消息处理、回执。只处理机器人单聊。 |
-| `internal/ws` | 最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用；`wstest` 是测试用服务端。握手请求头需与官方 SDK 一致，见 `docs/wecom.md`。 |
-| `internal/console` | 控制台来源（调试用）。 |
-| `internal/winlock` | Alt+. / Alt+/ 锁定：状态、目标识别、热键、提示卡片。 |
-| `internal/wintype` | 键入实现：SendInput、切前台输入、后台写终端、进程快照。 |
+| `internal/config` | 共用配置的结构、默认值、校验。无内部依赖。 |
+| `internal/source` | 来源接口 `Source`、消息 `Message`、`Handler`、`ErrDiscarded`。 |
+| `internal/source/wechat` | 微信来源：签名、扫码、长轮询、ACK、重连、回执。只接受扫码人。 |
+| `internal/source/feishu` | 飞书来源：扫码创建机器人、长连接（手写 protobuf 帧）、事件处理、回执。只处理机器人单聊，只接受扫码人。 |
+| `internal/source/wecom` | 企业微信来源：扫码创建智能机器人、长连接（JSON 帧）、配对、心跳、回执。只处理机器人单聊，只接受配对的本人。 |
+| `internal/source/console` | 控制台来源（调试用）。 |
+| `internal/delivery` | 投递器 `Deliverer`、`Injector`、`CursorInjector`。 |
+| `internal/delivery/winlock` | Alt+. / Alt+/ 锁定：状态、目标识别、热键、提示卡片。 |
+| `internal/delivery/wintype` | 键入实现：SendInput、切前台输入、后台写终端、进程快照。 |
+| `internal/store` | 辅助：各来源的凭证与本人身份（`*_token.json`）和已处理消息 ID（`*_acked.ids`，一行一个，追加写入）。凭证和记录的读写只走这里。 |
+| `internal/ws` | 辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用；`wstest` 是测试用服务端。握手请求头需与官方 SDK 一致，见 `docs/wecom.md`。 |
 | `docs/window-lock.md` | 锁定功能的原理、支持范围、已知限制。 |
 | `docs/feishu.md` | 飞书来源的接口、长连接协议、处理规则和未实测项。 |
 | `docs/wecom.md` | 企业微信来源的接口、长连接协议、处理规则和未实测项。 |
 
 分层规则：
 
-- `internal/ilink`、`internal/feishu`、`internal/wecom` 不直接读写文件，也不直接调用键盘输入。投递统一经过 `internal/relay`。
-- Win32 调用只放在 `internal/wintype` 和 `internal/winlock` 的 `*_windows.go` 中。其他包不要引入 `syscall` / `unsafe`。
+- `internal/source/*` 不直接读写文件（走 `internal/store`），也不调用键盘输入；消息交给 `source.Handler`，由 `internal/delivery` 投递。
+- Win32 调用只放在 `internal/delivery/wintype` 和 `internal/delivery/winlock` 的 `*_windows.go` 中。其他包不要引入 `syscall` / `unsafe`。
 - `INPUT` 结构体 64 位（40 字节）和 32 位（28 字节）分别构造，改动时保持两种布局。
 
 ## 行为约定（改动时不要破坏）

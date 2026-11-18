@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"wetype/internal/relay"
+	"wetype/internal/source"
 )
 
 func TestRun_SendsNonEmptyLinesUntilEOF(t *testing.T) {
-	var got []relay.Message
+	var got []source.Message
 	s := New(strings.NewReader("hello\n\n   \n  你好 世界  \r\nlast"), log.New(io.Discard, "", 0), Options{})
-	err := s.Run(context.Background(), func(_ context.Context, m relay.Message) error {
+	err := s.Run(context.Background(), func(_ context.Context, m source.Message) error {
 		got = append(got, m)
 		return nil
 	})
@@ -39,10 +39,10 @@ func TestRun_SendsNonEmptyLinesUntilEOF(t *testing.T) {
 
 func TestRun_ReportsResults(t *testing.T) {
 	var out bytes.Buffer
-	results := []error{nil, relay.ErrDiscarded, errors.New("boom")}
+	results := []error{nil, source.ErrDiscarded, errors.New("boom")}
 	i := 0
 	s := New(strings.NewReader("a\nb\nc\n"), log.New(&out, "", 0), Options{})
-	if err := s.Run(context.Background(), func(context.Context, relay.Message) error {
+	if err := s.Run(context.Background(), func(context.Context, source.Message) error {
 		err := results[i]
 		i++
 		return err
@@ -66,7 +66,7 @@ func TestRun_CursorDelayOnlyWhenToCursor(t *testing.T) {
 		CursorDelay: delay,
 		ToCursor:    func() bool { return toCursor },
 	})
-	_ = s.Run(context.Background(), func(context.Context, relay.Message) error {
+	_ = s.Run(context.Background(), func(context.Context, source.Message) error {
 		stamps = append(stamps, time.Since(start))
 		toCursor = false // 第二条模拟已锁定
 		return nil
@@ -88,7 +88,7 @@ func TestRun_StopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- New(r, log.New(io.Discard, "", 0), Options{}).Run(ctx, func(context.Context, relay.Message) error { return nil })
+		done <- New(r, log.New(io.Discard, "", 0), Options{}).Run(ctx, func(context.Context, source.Message) error { return nil })
 	}()
 	cancel()
 	select {

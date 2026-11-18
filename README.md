@@ -293,51 +293,29 @@ wetype.exe -source wecom
 wetype/
 ├── cmd/
 │   └── wetype/
-│       └── main.go          程序入口：参数、选择消息来源、装配投递与锁定
+│       └── main.go              程序入口：参数、选择消息来源、装配投递与锁定
 ├── internal/
-│   ├── config/
-│   │   └── config.go        配置结构、默认值、校验
-│   ├── store/
-│   │   ├── store.go         微信：bot_token、游标、context_token、ACK 持久化
-│   │   ├── feishu.go        飞书：App ID / Secret
-│   │   ├── wecom.go         企业微信：Bot ID / Secret
-│   │   └── acked.go         已处理消息 ID 记录：追加写入、超过上限压缩、丢弃写了一半的行
-│   ├── relay/
-│   │   └── relay.go         消息来源接口 Source、投递器 Deliverer
-│   ├── ilink/                微信消息来源
-│   │   ├── protocol.go      iLink JSON 协议结构
-│   │   ├── client.go        签名、登录、长轮询、ACK、重连、sendmessage
-│   │   └── util.go          随机数、退避、休眠、打开链接
-│   ├── feishu/               飞书消息来源（不依赖 SDK）
-│   │   ├── client.go        长连接会话、心跳、事件处理、回执
-│   │   ├── register.go      扫码创建机器人（设备码流程）
-│   │   ├── frame.go         长连接帧 pbbp2.Frame 的 protobuf 编解码
-│   │   └── util.go          休眠、退避、打开链接
-│   ├── wecom/                企业微信消息来源（不依赖 SDK）
-│   │   ├── client.go        长连接会话、认证、心跳、消息处理、回执
-│   │   ├── register.go      扫码创建智能机器人
-│   │   └── util.go          休眠、退避、打开链接
-│   ├── ws/                   最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用
-│   │   └── wstest/          测试用的 WebSocket 服务端
-│   ├── console/
-│   │   └── source.go        控制台消息来源（调试用）
-│   ├── winlock/              快捷键锁定：状态与语义、目标识别、热键、提示卡片
-│   └── wintype/
-│       ├── options.go       输入参数
-│       ├── input_windows.go SendInput Unicode 键入（//go:build windows）
-│       ├── window_windows.go 切前台输入、窗口信息
-│       ├── console_windows.go 后台写入终端、常驻辅助进程
-│       ├── process_windows.go 进程快照、控制台宿主、读操作计数
-│       └── *_other.go       非 Windows 占位实现
+│   ├── config/                  配置：共用配置的结构、默认值、校验
+│   ├── source/                  消息来源
+│   │   ├── source.go            来源接口 Source、消息 Message、Handler、ErrDiscarded
+│   │   ├── wechat/              微信（iLink Bot API）：签名、扫码、长轮询、ACK、重连、回执
+│   │   ├── feishu/              飞书：扫码创建机器人、长连接、pbbp2 帧编解码、事件处理、回执
+│   │   ├── wecom/               企业微信：扫码创建智能机器人、长连接、配对、回执
+│   │   └── console/             控制台（调试用）
+│   ├── delivery/                投递
+│   │   ├── delivery.go          投递器 Deliverer、Injector、CursorInjector
+│   │   ├── winlock/             快捷键锁定：状态与语义、目标识别、热键、提示卡片
+│   │   └── wintype/             键入：SendInput、切前台输入、后台写终端、进程快照；*_other.go 为非 Windows 占位
+│   ├── store/                   辅助：凭证（*_token.json）和已处理消息 ID（*_acked.ids）的持久化
+│   └── ws/                      辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用
+│       └── wstest/              测试用的 WebSocket 服务端
 ├── docs/
-│   ├── window-lock.md       锁定功能的原理与支持范围
-│   ├── feishu.md            飞书来源的协议细节与调研记录
-│   └── wecom.md             企业微信来源的协议细节与调研记录
-├── config.json              运行配置
-├── wechat_token.json        运行后生成：微信凭证与游标
-├── feishu_token.json        运行后生成：飞书凭证（source = feishu）
-├── wecom_token.json         运行后生成：企业微信凭证（source = wecom）
-├── *_acked.ids              运行后生成：已处理消息 ID，一行一个（wechat_ / feishu_ / wecom_acked.ids）
+│   ├── window-lock.md           锁定功能的原理与支持范围
+│   ├── feishu.md                飞书来源的协议细节与调研记录
+│   └── wecom.md                 企业微信来源的协议细节与调研记录
+├── config.json                  运行配置（可省略）
+├── *_token.json                 运行后生成：各来源的凭证与本人身份
+├── *_acked.ids                  运行后生成：已处理消息 ID，一行一个
 ├── go.mod
 └── README.md
 ```
@@ -345,10 +323,10 @@ wetype/
 分层约定：
 
 - `cmd` 只负责进程生命周期与依赖装配
-- `internal/ilink`、`internal/feishu`、`internal/wecom` 不直接操作文件，凭证读写全部通过 `internal/store`
-- `internal/wintype` 和 `internal/winlock` 的 `*_windows.go` 承载 Win32 调用，其他包不依赖 `syscall` / `unsafe`
-- `internal/ilink`、`internal/feishu`、`internal/wecom` 只是消息来源，不直接调用键盘输入，投递统一经 `internal/relay`
-- `internal/config` 无内部依赖，可被任意层引用
+- `internal/source/*` 只是消息来源，只依赖 `internal/source`、`internal/config`、`internal/store`、`internal/ws`，不调用键盘输入
+- `internal/delivery` 负责投递，Win32 调用只在 `delivery/wintype` 和 `delivery/winlock` 的 `*_windows.go` 里，其他包不依赖 `syscall` / `unsafe`
+- 凭证和消息记录的读写全部通过 `internal/store`
+- `internal/config`、`internal/store`、`internal/ws` 没有内部依赖（`ws/wstest` 只依赖 `ws`），可被任意层引用
 
 ## 许可证
 

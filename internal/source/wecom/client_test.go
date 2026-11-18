@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/relay"
+	"wetype/internal/source"
 	"wetype/internal/store"
 	"wetype/internal/ws"
 	"wetype/internal/ws/wstest"
@@ -50,11 +50,11 @@ func newTestClient(t *testing.T, mutate func(*config.Config)) (*Client, *bytes.B
 
 type recordingHandler struct {
 	mu   sync.Mutex
-	msgs []relay.Message
+	msgs []source.Message
 	err  error
 }
 
-func (h *recordingHandler) handle(_ context.Context, m relay.Message) error {
+func (h *recordingHandler) handle(_ context.Context, m source.Message) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.err != nil {
@@ -203,7 +203,7 @@ func TestHandleMessageFailureNotAcked(t *testing.T) {
 	if c.acked.Has("f1") {
 		t.Error("failed message must not be acked")
 	}
-	h.err = fmt.Errorf("%w: closed", relay.ErrDiscarded)
+	h.err = fmt.Errorf("%w: closed", source.ErrDiscarded)
 	c.handleMessage(context.Background(), nil, callback("r", "f2", "single", "text", "x", "u"))
 	if !c.acked.Has("f2") {
 		t.Error("discarded message should be acked")

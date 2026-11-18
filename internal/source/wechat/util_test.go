@@ -1,4 +1,4 @@
-package ilink
+package wechat
 
 import (
 	"context"

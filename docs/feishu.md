@@ -1,7 +1,7 @@
 # 飞书消息来源：协议与实现
 
 `source` 设为 `feishu`（或命令行 `-source feishu`）时，通过飞书机器人接收**单聊**里的文字消息。本文记录用到的接口、长连接协议、实现取舍和尚未实测的部分。
-代码在 `internal/feishu`，凭证读写在 `internal/store/feishu.go`。不依赖飞书 SDK。
+代码在 `internal/source/feishu`，凭证读写在 `internal/store/feishu.go`。不依赖飞书 SDK。
 
 ## 1. 整体流程
 

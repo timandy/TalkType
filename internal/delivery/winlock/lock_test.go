@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"wetype/internal/wintype"
+	"wetype/internal/delivery/wintype"
 )
 
 type fixture struct {

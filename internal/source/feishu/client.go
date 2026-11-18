@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/relay"
+	"wetype/internal/source"
 	"wetype/internal/store"
 	"wetype/internal/ws"
 )
@@ -46,7 +46,7 @@ const (
 // errBadCredentials 表示 app_id / app_secret 无效。
 var errBadCredentials = errors.New("飞书应用凭证无效")
 
-// Client 是飞书消息来源，实现 relay.Source。
+// Client 是飞书消息来源，实现 source.Source。
 type Client struct {
 	cfg        *config.Config
 	store      *store.FeishuStore
@@ -60,7 +60,7 @@ type Client struct {
 	openBase     func(domain string) string
 	sleep        func(ctx context.Context, d time.Duration) error
 
-	handle relay.Handler
+	handle source.Handler
 
 	// 当前使用的凭证。
 	appID, appSecret, domain, owner string
@@ -111,13 +111,13 @@ func defaultOpenBase(domain string) string {
 	return "https://open.feishu.cn"
 }
 
-var _ relay.Source = (*Client)(nil)
+var _ source.Source = (*Client)(nil)
 
-// Name 实现 relay.Source。
+// Name 实现 source.Source。
 func (c *Client) Name() string { return "飞书" }
 
-// Run 实现 relay.Source：准备好凭证后保持长连接，断开时按退避策略重连。
-func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
+// Run 实现 source.Source：准备好凭证后保持长连接，断开时按退避策略重连。
+func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	c.handle = handle
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
@@ -488,8 +488,8 @@ func (c *Client) processEvent(ctx context.Context, payload []byte) int {
 	}
 
 	c.logger.Printf("收到文本消息 from=%s id=%s: %s", from, id, truncate(text, 100))
-	err := c.handle(ctx, relay.Message{From: from, Text: text})
-	if errors.Is(err, relay.ErrDiscarded) {
+	err := c.handle(ctx, source.Message{From: from, Text: text})
+	if errors.Is(err, source.ErrDiscarded) {
 		c.logger.Printf("消息 id=%s 未发送: %v", id, err)
 		c.markAcked(id)
 		return http.StatusOK

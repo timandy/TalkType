@@ -1,7 +1,7 @@
 # 企业微信消息来源：协议与实现
 
 `source` 设为 `wecom`（或命令行 `-source wecom`）时，通过企业微信“智能机器人”接收**单聊**里的文字消息。
-代码在 `internal/wecom`，凭证读写在 `internal/store/wecom.go`，WebSocket 客户端在 `internal/ws`（与飞书共用）。不依赖企业微信 SDK。
+代码在 `internal/source/wecom`，凭证读写在 `internal/store/wecom.go`，WebSocket 客户端在 `internal/ws`（与飞书共用）。不依赖企业微信 SDK。
 
 ## 1. 整体流程
 

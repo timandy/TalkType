@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/relay"
+	"wetype/internal/source"
 	"wetype/internal/store"
 	"wetype/internal/ws"
 )
@@ -52,7 +52,7 @@ var (
 	errReplaced = errors.New("该机器人已在别处建立长连接")
 )
 
-// Client 是企业微信来源，实现 relay.Source。
+// Client 是企业微信来源，实现 source.Source。
 type Client struct {
 	cfg        *config.Config
 	store      *store.WeComStore
@@ -67,7 +67,7 @@ type Client struct {
 	heartbeat time.Duration
 	sleep     func(ctx context.Context, d time.Duration) error
 
-	handle relay.Handler
+	handle source.Handler
 
 	botID, secret string
 	// pairCode 是未配对时等待用户发来的配对码；已配对时为空。
@@ -93,13 +93,13 @@ func NewClient(cfg *config.Config, st *store.WeComStore, acked *store.AckedIDs, 
 	}
 }
 
-var _ relay.Source = (*Client)(nil)
+var _ source.Source = (*Client)(nil)
 
-// Name 实现 relay.Source。
+// Name 实现 source.Source。
 func (c *Client) Name() string { return "企业微信" }
 
-// Run 实现 relay.Source：准备好凭证后保持长连接，断开时按退避策略重连。
-func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
+// Run 实现 source.Source：准备好凭证后保持长连接，断开时按退避策略重连。
+func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	c.handle = handle
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
@@ -411,8 +411,8 @@ func (c *Client) handleMessage(ctx context.Context, conn *ws.Conn, f *frame) {
 	}
 
 	c.logger.Printf("收到文本消息 from=%s id=%s: %s", from, id, truncate(text, 100))
-	err := c.handle(ctx, relay.Message{From: from, Text: text})
-	if errors.Is(err, relay.ErrDiscarded) {
+	err := c.handle(ctx, source.Message{From: from, Text: text})
+	if errors.Is(err, source.ErrDiscarded) {
 		c.logger.Printf("消息 id=%s 未发送: %v", id, err)
 		c.markAcked(id)
 		return

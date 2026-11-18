@@ -1,6 +1,6 @@
-// Package ilink 实现微信 iLink Bot API 客户端：签名、扫码登录、长轮询、
+// Package wechat 是微信消息来源，实现 iLink Bot API 客户端：签名、扫码登录、长轮询、
 // 消息 ACK、断线重连与文本回复。
-package ilink
+package wechat
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/relay"
+	"wetype/internal/source"
 	"wetype/internal/store"
 )
 
@@ -68,7 +68,7 @@ type Client struct {
 	acked      *store.AckedIDs
 	logger     *log.Logger
 	httpClient *http.Client
-	handle     relay.Handler
+	handle     source.Handler
 }
 
 // NewClient 创建 iLink 客户端。acked 记录已处理的消息 ID，用于游标重放时去重。
@@ -276,13 +276,13 @@ func (c *Client) pollQRStatus(ctx context.Context, base, qrcode string) (*QRStat
 // 消息轮询 / ACK / 重连
 // ---------------------------------------------------------------------------
 
-var _ relay.Source = (*Client)(nil)
+var _ source.Source = (*Client)(nil)
 
-// Name 实现 relay.Source。
+// Name 实现 source.Source。
 func (c *Client) Name() string { return "微信" }
 
-// Run 实现 relay.Source，常驻运行：未登录先扫码，随后进入长轮询；异常时按退避策略恢复。
-func (c *Client) Run(ctx context.Context, handle relay.Handler) error {
+// Run 实现 source.Source，常驻运行：未登录先扫码，随后进入长轮询；异常时按退避策略恢复。
+func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	c.handle = handle
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
@@ -430,8 +430,8 @@ func (c *Client) handleMessage(ctx context.Context, msg *WeixinMessage) bool {
 	}
 
 	c.logger.Printf("收到文本消息 from=%s id=%d: %s", msg.FromUserID, key, truncate(text, 100))
-	err := c.handle(ctx, relay.Message{From: msg.FromUserID, Text: text})
-	if errors.Is(err, relay.ErrDiscarded) {
+	err := c.handle(ctx, source.Message{From: msg.FromUserID, Text: text})
+	if errors.Is(err, source.ErrDiscarded) {
 		c.logger.Printf("消息 id=%d 未发送: %v", key, err)
 		c.markAcked(key)
 		return true

@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"wetype/internal/config"
-	"wetype/internal/relay"
+	"wetype/internal/source"
 	"wetype/internal/store"
 	"wetype/internal/ws"
 	"wetype/internal/ws/wstest"
@@ -210,11 +210,11 @@ func messageEventJSON(msgID, chatType, msgType, content, openID string, mentions
 
 type recordingHandler struct {
 	mu   sync.Mutex
-	msgs []relay.Message
+	msgs []source.Message
 	err  error
 }
 
-func (h *recordingHandler) handle(_ context.Context, m relay.Message) error {
+func (h *recordingHandler) handle(_ context.Context, m source.Message) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.err != nil {
@@ -291,7 +291,7 @@ func TestProcessEventFailureAndDiscard(t *testing.T) {
 		t.Errorf("redelivery: code=%d typed=%d", got, len(h.msgs))
 	}
 
-	h.err = fmt.Errorf("%w: closed", relay.ErrDiscarded)
+	h.err = fmt.Errorf("%w: closed", source.ErrDiscarded)
 	ev2 := messageEventJSON("f2", "p2p", "text", `{"text":"y"}`, "ou_any")
 	if got := c.processEvent(context.Background(), ev2); got != 200 || !c.acked.Has("f2") {
 		t.Errorf("discarded: code=%d acked=%v", got, c.acked.Has("f2"))

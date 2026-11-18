@@ -1,10 +1,9 @@
-// Package relay 定义消息来源与投递的抽象：
+// Package delivery 把消息投递到目标：当前光标，或用 Alt+. 锁定的窗口 / 终端。
 //
-//	Source（微信、控制台……） --Message--> Handler（Deliverer）--> 光标 / 锁定的窗口或终端
+//	source.Source --source.Message--> Deliverer --> Injector（winlock 或 CursorInjector）--> wintype 键入
 //
-// 来源只负责“拿到消息”以及它自己的确认语义（例如微信的 ACK 和游标），
-// 投递统一由 Deliverer 完成。
-package relay
+// 子包：winlock 负责快捷键锁定与目标识别，wintype 负责 Win32 键入和后台写终端。
+package delivery
 
 import (
 	"context"
@@ -12,29 +11,9 @@ import (
 	"fmt"
 	"sync"
 
-	"wetype/internal/wintype"
+	"wetype/internal/delivery/wintype"
+	"wetype/internal/source"
 )
-
-// Message 是一条待投递的文本消息。
-type Message struct {
-	From string // 发送者，用于日志
-	Text string
-}
-
-// Handler 投递一条消息。
-//   - 返回 nil：已投递；
-//   - 返回的错误满足 errors.Is(err, ErrDiscarded)：目标已不存在，消息被丢弃，来源不应重试；
-//   - 其他错误：投递失败，来源可以稍后重试。
-type Handler func(ctx context.Context, m Message) error
-
-// Source 是消息来源。Run 持续读取消息并交给 handle，直到 ctx 结束或来源耗尽。
-type Source interface {
-	Name() string
-	Run(ctx context.Context, handle Handler) error
-}
-
-// ErrDiscarded 表示消息因为锁定的目标已关闭而被丢弃。
-var ErrDiscarded = errors.New("锁定的目标已关闭，消息已丢弃")
 
 // 目标关闭时的通知文案。
 const (
@@ -73,8 +52,8 @@ func NewDeliverer(inj Injector, opts wintype.Options) *Deliverer {
 	return &Deliverer{inj: inj, opts: opts}
 }
 
-// Deliver 实现 Handler。
-func (d *Deliverer) Deliver(ctx context.Context, m Message) error {
+// Deliver 实现 source.Handler。
+func (d *Deliverer) Deliver(ctx context.Context, m source.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -84,7 +63,7 @@ func (d *Deliverer) Deliver(ctx context.Context, m Message) error {
 	err := d.inj.Inject(m.Text, d.opts)
 	if errors.Is(err, wintype.ErrTargetClosed) {
 		d.inj.Notify(closedNoticeTitle, closedNoticeText)
-		return fmt.Errorf("%w: %w", ErrDiscarded, err)
+		return fmt.Errorf("%w: %w", source.ErrDiscarded, err)
 	}
 	return err
 }
