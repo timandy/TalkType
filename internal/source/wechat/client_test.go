@@ -612,3 +612,15 @@ func TestCheck_HTTPStatus(t *testing.T) {
 		}
 	}
 }
+
+// 有 token 但没有扫码人：senderAllowed 会放行所有人，视为凭证不完整，清除并要求扫码。
+func TestCheck_MissingOwner(t *testing.T) {
+	c := newTestClient(t, nil)
+	c.store.SetSession("tk", "bot", "", "https://x")
+	if err := c.Check(context.Background()); !errors.Is(err, source.ErrAuthRequired) {
+		t.Fatalf("err = %v", err)
+	}
+	if c.store.Token() != "" {
+		t.Error("不完整的凭证应被清除，否则 Authorize 会跳过扫码")
+	}
+}

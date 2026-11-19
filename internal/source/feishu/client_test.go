@@ -626,3 +626,26 @@ func TestCheck_Unreachable(t *testing.T) {
 		t.Error("网络不通时不能清凭证")
 	}
 }
+
+// 有 app_id 和 secret 但没有扫码人：不会键入任何消息，视为凭证不完整，清除并要求扫码。
+func TestCheck_Incomplete(t *testing.T) {
+	for _, tc := range []struct{ name, id, secret, owner string }{
+		{"缺扫码人", "app", "secret", ""},
+		{"缺 secret", "app", "", "ou_me"},
+		{"缺 app_id", "", "secret", "ou_me"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestClient(t, nil)
+			c.openBase = func(string) string { t.Error("不完整的凭证不应发起请求"); return "" }
+			c.store.SetCredentials(tc.id, tc.secret, config.FeishuDomain, tc.owner)
+			if err := c.Check(context.Background()); !errors.Is(err, source.ErrAuthRequired) {
+				t.Fatalf("err = %v", err)
+			}
+			if tc.id != "" && tc.secret != "" {
+				if id, _, _, _ := c.store.Credentials(); id != "" {
+					t.Error("缺扫码人的凭证应被清除，否则 Authorize 会跳过扫码")
+				}
+			}
+		})
+	}
+}

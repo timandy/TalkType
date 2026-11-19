@@ -97,10 +97,17 @@ var _ source.Source = (*Client)(nil)
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "企业微信" }
 
-// Check 实现 source.Authorizer：没有凭证，或认证时服务端明确返回凭证无效时返回
+// Check 实现 source.Authorizer：凭证缺失或不完整（没有 bot_id 或 secret），或认证时服务端明确返回凭证无效时返回
 // ErrAuthRequired，其余情况（包括网络错误、超时）视为暂时无法判断，返回 nil。
 func (c *Client) Check(ctx context.Context) error {
 	if id, secret := c.store.Credentials(); id == "" || secret == "" {
+		// 只剩一半凭证没有用，清掉，让 Authorize 重新扫码。
+		if id != "" || secret != "" {
+			c.logger.Println("凭证文件里的 bot_id 或 secret 缺失，视为未授权，清除后重新扫码")
+			if err := c.store.Delete(); err != nil {
+				c.logger.Printf("删除凭证文件失败: %v", err)
+			}
+		}
 		return source.ErrAuthRequired
 	}
 	if err := c.loadCredentials(ctx); err != nil {

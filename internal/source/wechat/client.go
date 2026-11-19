@@ -281,10 +281,16 @@ var _ source.Source = (*Client)(nil)
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "微信" }
 
-// Check 实现 source.Authorizer：没有登录态，或服务端返回会话过期（-14）时返回 ErrAuthRequired。
+// Check 实现 source.Authorizer：凭证缺失或不完整（没有 token 或扫码人），或服务端返回会话过期（-14、HTTP 401/403）时返回 ErrAuthRequired。
 // 其余情况（包括网络错误、超时）视为暂时无法判断，返回 nil。
 func (c *Client) Check(ctx context.Context) error {
 	if c.store.Token() == "" {
+		return source.ErrAuthRequired
+	}
+	// 没有记下扫码人时 senderAllowed 会放行所有人，凭证不完整，必须重新扫码。
+	if c.store.Owner() == "" {
+		c.logger.Println("凭证文件缺少扫码人（user_id），视为未授权，清除后重新扫码")
+		c.resetSession()
 		return source.ErrAuthRequired
 	}
 	// 用已保存的游标短轮询一次，只看会话是否有效；游标不推进、消息不处理，之后会被正式轮询重新取到。

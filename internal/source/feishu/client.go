@@ -116,10 +116,20 @@ var _ source.Source = (*Client)(nil)
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "飞书" }
 
-// Check 实现 source.Authorizer：没有凭证，或服务端明确拒绝凭证时返回 ErrAuthRequired，
+// Check 实现 source.Authorizer：凭证缺失或不完整（没有 app_id、secret 或扫码人），或服务端明确拒绝凭证时返回 ErrAuthRequired，
 // 其余情况（包括网络错误）视为暂时无法判断，返回 nil。
 func (c *Client) Check(ctx context.Context) error {
-	if id, secret, _, _ := c.store.Credentials(); id == "" || secret == "" {
+	id, secret, _, owner := c.store.Credentials()
+	if id == "" || secret == "" {
+		return source.ErrAuthRequired
+	}
+	// 没有扫码人时不会键入任何消息，凭证不完整，必须重新扫码。
+	if owner == "" {
+		c.logger.Println("凭证文件缺少扫码人的 open_id，视为未授权，清除后重新扫码")
+		c.store.ClearCredentials()
+		if err := c.store.Save(); err != nil {
+			c.logger.Printf("保存凭证文件失败: %v", err)
+		}
 		return source.ErrAuthRequired
 	}
 	if err := c.loadCredentials(ctx); err != nil {

@@ -627,3 +627,19 @@ func TestCheck_Unreachable(t *testing.T) {
 		t.Error("网络不通时不能清凭证")
 	}
 }
+
+// 只有一半凭证（缺 secret 或 bot_id）视为未授权，清除后重新扫码。
+func TestCheck_Incomplete(t *testing.T) {
+	for _, tc := range []struct{ name, id, secret string }{{"缺 secret", "bot", ""}, {"缺 bot_id", "", "secret"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestClient(t, nil)
+			c.store.SetCredentials(tc.id, tc.secret)
+			if err := c.Check(context.Background()); !errors.Is(err, source.ErrAuthRequired) {
+				t.Fatalf("err = %v", err)
+			}
+			if id, secret := c.store.Credentials(); id != "" || secret != "" {
+				t.Error("不完整的凭证应被清除")
+			}
+		})
+	}
+}
