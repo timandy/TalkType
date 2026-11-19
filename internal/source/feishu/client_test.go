@@ -344,7 +344,7 @@ func TestEndpointErrors(t *testing.T) {
 		badCred bool
 	}{
 		{`{"code":1000040346,"msg":"app_id is invalid","data":{"URL":""}}`, true},
-		{`{"code":514,"msg":"auth failed","data":{}}`, true},
+		{`{"code":514,"msg":"auth failed","data":{}}`, false},
 		{`{"code":1,"msg":"system busy","data":{}}`, false},
 		{`{"code":0,"msg":"ok","data":{"URL":""}}`, false},
 	} {
@@ -481,7 +481,7 @@ func TestRunRescansWhenStoredCredentialsInvalid(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&body)
 		endpointCalls++
 		if body["AppID"] == "cli_old" {
-			io.WriteString(w, `{"code":514,"msg":"auth failed","data":{}}`)
+			io.WriteString(w, `{"code":1000040346,"msg":"app_id is invalid","data":{}}`)
 			return
 		}
 		cancel() // 换成扫码得到的新凭证后结束测试
@@ -575,5 +575,54 @@ func TestLoadCredentialsFromStoreResetsTokenAndWarnsWithoutOwner(t *testing.T) {
 	c2.loadCredentials(context.Background())
 	if c2.owner != "ou_me" || c2.domain != config.FeishuDomain || strings.Contains(logs2.String(), "警告") {
 		t.Errorf("owner=%s domain=%s logs=%s", c2.owner, c2.domain, logs2.String())
+	}
+}
+
+func TestCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		saved    bool
+		body     string
+		wantAuth bool
+		wantKept bool // 检查后凭证是否仍在
+	}{
+		{"没有凭证", false, `{}`, true, false},
+		{"凭证有效", true, `{"code":0,"data":{"URL":"wss://x/ws"}}`, false, true},
+		{"凭证被拒绝", true, `{"code":1000040346,"msg":"app_id is invalid","data":{}}`, true, false},
+		{"514 含义不明确视为无法判断", true, `{"code":514,"msg":"auth failed","data":{}}`, false, true},
+		{"服务端繁忙视为无法判断", true, `{"code":1,"msg":"busy","data":{}}`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, tc.body) }))
+			defer srv.Close()
+			c, _ := newTestClient(t, nil)
+			c.openBase = func(string) string { return srv.URL }
+			if tc.saved {
+				c.store.SetCredentials("app", "secret", config.FeishuDomain, "ou_me")
+			}
+			err := c.Check(context.Background())
+			if errors.Is(err, source.ErrAuthRequired) != tc.wantAuth {
+				t.Errorf("err = %v", err)
+			}
+			id, _, _, _ := c.store.Credentials()
+			if (id != "") != tc.wantKept {
+				t.Errorf("凭证保留 = %v", id != "")
+			}
+		})
+	}
+}
+
+func TestCheck_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	c, _ := newTestClient(t, nil)
+	c.openBase = func(string) string { return url }
+	c.store.SetCredentials("app", "secret", config.FeishuDomain, "ou_me")
+	if err := c.Check(context.Background()); err != nil {
+		t.Errorf("err = %v", err)
+	}
+	if id, _, _, _ := c.store.Credentials(); id == "" {
+		t.Error("网络不通时不能清凭证")
 	}
 }

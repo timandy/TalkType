@@ -35,7 +35,6 @@ const (
 	defaultHeartbeat = 30 * time.Second
 	maxMissedPong    = 2 // 连续这么多次心跳没有回应，判定连接已死（与官方 SDK 一致）
 	authTimeout      = 15 * time.Second
-	maxAuthFailures  = 3 // 连续认证失败这么多次才判定凭证无效，避免偶发错误触发重新扫码
 
 	// errcodeInvalidCredentials 是认证响应里 "invalid bot_id or secret" 的错误码（实测），收到即判定凭证无效。
 	errcodeInvalidCredentials = 853000
@@ -180,8 +179,6 @@ func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
 	backoff := minDelay
-	authFailures := 0
-
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -199,26 +196,20 @@ func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 			backoff = minDelay
 		}
 
-		err := c.session(ctx, func() { backoff, authFailures = minDelay, 0 })
+		err := c.session(ctx, func() { backoff = minDelay })
 		if ctx.Err() != nil {
 			return nil
 		}
 		switch {
 		case errors.Is(err, errReplaced):
 			return fmt.Errorf("%w，本程序停止运行，避免两边互相挤下线", err)
-		case errors.Is(err, errAuthFailed):
-			authFailures++
-			if errors.Is(err, errInvalidCredentials) {
-				authFailures = maxAuthFailures
-			}
-			if authFailures < maxAuthFailures {
-				break
-			}
+		case errors.Is(err, errInvalidCredentials):
+			// 只有服务端明确说凭证无效才清除并重新扫码；其他认证失败（含超时、未知错误码）只退避重连。
 			c.logger.Printf("%v，清除本地凭证并重新扫码", err)
 			if err := c.store.Delete(); err != nil {
 				c.logger.Printf("删除凭证文件失败: %v", err)
 			}
-			c.botID, authFailures, backoff = "", 0, minDelay
+			c.botID, backoff = "", minDelay
 			continue
 		}
 		c.logger.Printf("企业微信长连接中断: %v，%s 后重连", err, backoff)

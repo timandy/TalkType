@@ -38,7 +38,7 @@ const (
 const (
 	codeOK            = 0
 	codeSystemBusy    = 1
-	codeAuthFailed    = 514
+	codeAuthFailed    = 514 // 未实测，含义不明确，不当作凭证无效
 	codeInternalError = 1000040343
 	codeAppIDInvalid  = 1000040346
 )
@@ -269,7 +269,7 @@ func (c *Client) endpoint(ctx context.Context) (string, time.Duration, error) {
 	}
 	switch r.Code {
 	case codeOK:
-	case codeAuthFailed, codeAppIDInvalid:
+	case codeAppIDInvalid:
 		return "", 0, fmt.Errorf("%w: code=%d %s", errBadCredentials, r.Code, r.Msg)
 	default:
 		return "", 0, fmt.Errorf("获取长连接地址失败: code=%d %s", r.Code, r.Msg)

@@ -124,9 +124,12 @@ func main() {
 		}
 		sources = append(sources, s)
 	}
-	// 单个来源直接运行；多个来源按配置顺序逐个授权、逐个启动。
-	var src source.Source = sources[0]
-	if len(sources) > 1 {
+	// console 不需要授权，单独使用时直接运行；其余情况（包括只有一个来源）都走 Multi：
+	// 先检查凭证，没有授权就弹扫码，超时没扫则打印日志后自动退出。
+	var src source.Source
+	if _, isConsole := sources[0].(*console.Source); isConsole {
+		src = sources[0]
+	} else {
 		multi := source.NewMulti(logger, sources...)
 		multi.SkipInput = os.Stdin
 		src = multi

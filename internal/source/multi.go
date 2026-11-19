@@ -15,6 +15,12 @@ import (
 // DefaultSkipAfter 是单个来源等待扫码的最长时间，超时后跳过它，继续下一个。
 const DefaultSkipAfter = 5 * time.Minute
 
+// DefaultNoSourceDelay 是没有任何来源可用时，打印日志后到退出之间的等待时间。
+const DefaultNoSourceDelay = 5 * time.Second
+
+// ErrNoSource 表示所有来源都没有授权成功（被跳过或授权失败），没有任何来源在运行。
+var ErrNoSource = errors.New("没有可用的消息来源")
+
 var (
 	errSkipTimeout = errors.New("等待扫码超时")
 	errSkipKey     = errors.New("用户选择跳过")
@@ -43,6 +49,8 @@ type Multi struct {
 	// SkipInput 非空时，等待扫码期间读到一行 s（不区分大小写）就跳过当前来源。
 	// 不能和同样读标准输入的来源（console）共用，此时留空。
 	SkipInput io.Reader
+	// NoSourceDelay 是没有任何来源可用时，打印日志后到退出的等待时间；0 表示用 DefaultNoSourceDelay。
+	NoSourceDelay time.Duration
 }
 
 // NewMulti 按给定顺序组合多个来源。
@@ -84,7 +92,9 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 		errs = append(errs, fmt.Errorf("%s: %w", s.Name(), err))
 		mu.Unlock()
 	}
+	started := 0
 	start := func(s Source) {
+		started++
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -108,13 +118,30 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 			if ctx.Err() != nil {
 				break
 			}
-			m.logger.Printf("%s 需要扫码授权，稍后依次弹出: %v", s.Name(), err)
+			m.logger.Printf("%s 需要扫码授权，检查完所有来源后依次弹出", s.Name())
 			pending = append(pending, s)
 			continue
 		}
 		start(s)
 	}
-	lines := m.skipLines()
+	// 输入协程只有一个，由它把 s 转给“当前正在扫码”的来源；没有来源在扫码时，输入被忽略。
+	var (
+		skipMu  sync.Mutex
+		skipCur context.CancelCauseFunc
+	)
+	setCur := func(c context.CancelCauseFunc) {
+		skipMu.Lock()
+		skipCur = c
+		skipMu.Unlock()
+	}
+	m.watchSkipInput(func() {
+		skipMu.Lock()
+		c := skipCur
+		skipMu.Unlock()
+		if c != nil {
+			c(errSkipKey)
+		}
+	})
 	for _, s := range pending {
 		if ctx.Err() != nil {
 			break
@@ -122,28 +149,15 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 		// 每个来源都可以跳过：超时，或在本窗口输入 s。
 		authCtx, cancel := context.WithCancelCause(ctx)
 		timer := time.AfterFunc(m.skipAfter(), func() { cancel(errSkipTimeout) })
-		go func() {
-			defer timer.Stop()
-			for {
-				select {
-				case <-authCtx.Done():
-					return
-				case line, ok := <-lines:
-					if !ok {
-						lines = nil
-					} else if strings.EqualFold(strings.TrimSpace(line), "s") {
-						cancel(errSkipKey)
-						return
-					}
-				}
-			}
-		}()
+		setCur(cancel)
 		hint := fmt.Sprintf("%s 内未扫码将跳过", m.skipAfter())
 		if m.SkipInput != nil {
 			hint += "，也可以在本窗口输入 s 回车立即跳过"
 		}
 		m.logger.Printf("正在为 %s 扫码：%s", s.Name(), hint)
 		err := s.(Authorizer).Authorize(authCtx)
+		setCur(nil)
+		timer.Stop()
 		cause := context.Cause(authCtx)
 		cancel(nil)
 		if err != nil {
@@ -162,6 +176,18 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 		}
 		start(s)
 	}
+	if started == 0 && ctx.Err() == nil {
+		delay := m.NoSourceDelay
+		if delay <= 0 {
+			delay = DefaultNoSourceDelay
+		}
+		m.logger.Printf("没有任何可用的消息来源（全部被跳过或授权失败），%s 后自动退出", delay)
+		select {
+		case <-ctx.Done():
+		case <-time.After(delay):
+		}
+		errs = append(errs, ErrNoSource)
+	}
 	wg.Wait()
 	return errors.Join(errs...)
 }
@@ -173,19 +199,18 @@ func (m *Multi) skipAfter() time.Duration {
 	return DefaultSkipAfter
 }
 
-// skipLines 在后台逐行读取 SkipInput。没有输入源时返回 nil（读 nil 通道永远阻塞）。
-// 读取会阻塞到下一行或输入结束，所以只启动一个读取协程，各来源共用。
-func (m *Multi) skipLines() <-chan string {
+// watchSkipInput 在后台逐行读取 SkipInput，读到 s（不区分大小写）时调用 onSkip。
+// 读取会阻塞到下一行或输入结束，所以只启动一个协程，由它转发给各来源。
+func (m *Multi) watchSkipInput(onSkip func()) {
 	if m.SkipInput == nil {
-		return nil
+		return
 	}
-	ch := make(chan string)
 	go func() {
-		defer close(ch)
 		sc := bufio.NewScanner(m.SkipInput)
 		for sc.Scan() {
-			ch <- sc.Text()
+			if strings.EqualFold(strings.TrimSpace(sc.Text()), "s") {
+				onSkip()
+			}
 		}
 	}()
-	return ch
 }

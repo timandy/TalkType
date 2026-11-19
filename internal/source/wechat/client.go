@@ -291,10 +291,7 @@ func (c *Client) Check(ctx context.Context) error {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	resp, err := c.getUpdates(probeCtx, c.store.Buf(), c.set.pollTimeout)
-	if err != nil || resp == nil {
-		return nil
-	}
-	if resp.Ret == -14 || resp.ErrCode == -14 {
+	if errors.Is(err, ErrSessionExpired) || (err == nil && resp != nil && (resp.Ret == -14 || resp.ErrCode == -14)) {
 		c.logger.Println("微信会话已过期（-14），清除本地凭证")
 		c.resetSession()
 		return source.ErrAuthRequired

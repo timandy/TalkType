@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"strings"
@@ -105,7 +106,7 @@ func TestMulti_SkipOnTimeout(t *testing.T) {
 	}
 }
 
-// 输入 s 立即跳过，最后一个也一样；全部跳过后 Run 正常结束。
+// 输入 s 立即跳过当前正在扫码的来源，最后一个也一样；全部跳过后等一会儿再返回 ErrNoSource。
 func TestMulti_SkipByKey(t *testing.T) {
 	var events []string
 	var mu sync.Mutex
@@ -113,15 +114,38 @@ func TestMulti_SkipByKey(t *testing.T) {
 	b := &fakeSource{name: "b", events: &events, mu: &mu, needAuth: true, block: true}
 	m := NewMulti(log.New(io.Discard, "", 0), a, b)
 	m.SkipAfter = time.Minute
-	m.SkipInput = strings.NewReader("x\nS\ns\n")
+	m.NoSourceDelay = 10 * time.Millisecond
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	m.SkipInput = pr
+
+	has := func(e string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, x := range events {
+			if x == e {
+				return true
+			}
+		}
+		return false
+	}
 	done := make(chan error, 1)
 	go func() {
 		done <- m.Run(context.Background(), func(ctx context.Context, msg Message) error { return nil })
 	}()
+	// 等对应来源开始扫码后再按 s，按键只对正在扫码的来源有效。
+	for _, name := range []string{"a", "b"} {
+		deadline := time.Now().Add(5 * time.Second)
+		for !has("auth:"+name) && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		pw.Write([]byte("x\n"))
+		pw.Write([]byte("S\n"))
+	}
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, ErrNoSource) {
+			t.Fatalf("err = %v，期望 ErrNoSource", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("按 s 后没有跳过")

@@ -541,3 +541,74 @@ func TestHandleMessage_NonTextIsLoggedOnly(t *testing.T) {
 		t.Errorf("log = %q", out)
 	}
 }
+
+func TestCheck(t *testing.T) {
+	tests := []struct {
+		name      string
+		token     string
+		body      string
+		wantAuth  bool
+		wantToken string // 检查后凭证里应保留的 token
+	}{
+		{"没有凭证", "", `{}`, true, ""},
+		{"凭证有效", "tk", `{"ret":0}`, false, "tk"},
+		{"会话过期", "tk", `{"ret":-14}`, true, ""},
+		{"其他错误视为无法判断", "tk", `{"ret":5,"errmsg":"boom"}`, false, "tk"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, func(c *Client) {
+				c.set.baseURL = srv.URL
+				c.set.pollTimeout = time.Second
+				c.set.httpTimeout = 5 * time.Second
+			})
+			if tc.token != "" {
+				c.store.SetSession(tc.token, "bot", "user", srv.URL)
+			}
+			err := c.Check(context.Background())
+			if errors.Is(err, source.ErrAuthRequired) != tc.wantAuth {
+				t.Errorf("err = %v", err)
+			}
+			if c.store.Token() != tc.wantToken {
+				t.Errorf("token = %q", c.store.Token())
+			}
+		})
+	}
+}
+
+// 网络不通或服务端不响应时无法判断，不能当作失效。
+func TestCheck_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	c := newTestClient(t, func(c *Client) { c.set.baseURL = url })
+	c.store.SetSession("tk", "bot", "user", url)
+	if err := c.Check(context.Background()); err != nil || c.store.Token() != "tk" {
+		t.Errorf("err = %v, token = %q", err, c.store.Token())
+	}
+}
+
+// HTTP 401/403 与 -14 一样是明确的会话失效；5xx 不是。
+func TestCheck_HTTPStatus(t *testing.T) {
+	for code, wantAuth := range map[int]bool{401: true, 403: true, 500: false, 502: false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) }))
+		c := newTestClient(t, func(c *Client) {
+			c.set.baseURL = srv.URL
+			c.set.pollTimeout = time.Second
+			c.set.httpTimeout = 5 * time.Second
+		})
+		c.store.SetSession("tk", "bot", "user", srv.URL)
+		err := c.Check(context.Background())
+		srv.Close()
+		if errors.Is(err, source.ErrAuthRequired) != wantAuth {
+			t.Errorf("HTTP %d: err = %v", code, err)
+		}
+		if (c.store.Token() == "") != wantAuth {
+			t.Errorf("HTTP %d: token = %q", code, c.store.Token())
+		}
+	}
+}

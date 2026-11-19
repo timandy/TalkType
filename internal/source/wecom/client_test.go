@@ -496,55 +496,43 @@ func TestRunStopsWhenReplaced(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
-func TestRunRescansWhenStoredCredentialsInvalid(t *testing.T) {
-	qc := &fakeQC{}
-	qcSrv := httptest.NewServer(qc)
-	defer qcSrv.Close()
+
+// 认证失败但服务端没有明确说凭证无效（未知错误码）时，只退避重连，不清除凭证、不扫码。
+func TestRunKeepsCredentialsOnOtherAuthFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	fw := &fakeWS{t: t}
 	var mu sync.Mutex
+	attempts := 0
 	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 旧凭证认证失败，扫码得到的新凭证认证成功后结束测试
 		s := wstest.Accept(t, w, r)
 		defer s.Close()
 		m, err := readJSON(s)
 		if err != nil {
 			return
 		}
-		body := m["body"].(map[string]any)
-		id := m["headers"].(map[string]any)["req_id"].(string)
+		s.Write(true, ws.OpText, []byte(fmt.Sprintf(`{"headers":{"req_id":%q},"errcode":40001}`, m["headers"].(map[string]any)["req_id"])))
 		mu.Lock()
-		fw.auths = append(fw.auths, map[string]string{"bot_id": body["bot_id"].(string)})
-		mu.Unlock()
-		code := 0
-		if body["bot_id"] == "bot_old" {
-			code = 40001
-		} else {
+		attempts++
+		if attempts >= 5 {
 			cancel()
 		}
-		s.Write(true, ws.OpText, []byte(fmt.Sprintf(`{"headers":{"req_id":%q},"errcode":%d}`, id, code)))
+		mu.Unlock()
 	}))
 	defer wsSrv.Close()
-
+	qc := httptest.NewServer(&fakeQC{})
+	defer qc.Close()
 	c, _ := newTestClient(t, nil)
 	c.wsURL = wstest.URL(wsSrv)
-	c.qcBase = qcSrv.URL
+	c.qcBase = qc.URL
 	c.store.SetCredentials("bot_old", "old")
 	if err := c.Run(ctx, (&recordingHandler{}).handle); err != nil {
 		t.Fatal(err)
 	}
-	if id, _ := c.store.Credentials(); id != "bot_x" {
-		t.Errorf("credentials after rescan = %s", id)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(fw.auths) != maxAuthFailures+1 || fw.auths[maxAuthFailures]["bot_id"] != "bot_x" {
-		t.Errorf("auths = %v", fw.auths)
+	if id, _ := c.store.Credentials(); id != "bot_old" {
+		t.Errorf("凭证被改动: %q", id)
 	}
 }
 
-// 服务端明确返回凭证无效（853000）时不再重试，手动填写的凭证直接报错退出。
 // rescanServers 搭一个扫码服务和一个长连接服务：bot_old 认证返回 oldCode，扫码得到的 bot_x 认证成功后结束测试。
 func rescanServers(t *testing.T, oldCode int, cancel context.CancelFunc) (qc, wsSrv *httptest.Server, auths func() []string) {
 	t.Helper()
@@ -589,5 +577,53 @@ func TestRunRescansImmediatelyOnInvalidCredentials(t *testing.T) {
 	}
 	if got := auths(); len(got) != 2 || got[0] != "bot_old" || got[1] != "bot_x" {
 		t.Errorf("auths = %v, want one attempt with bot_old then bot_x", got)
+	}
+}
+
+func TestCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		saved    bool
+		authErr  int
+		wantAuth bool
+		wantKept bool
+	}{
+		{"没有凭证", false, 0, true, false},
+		{"凭证有效", true, 0, false, true},
+		{"凭证无效", true, errcodeInvalidCredentials, true, false},
+		{"其他认证错误视为无法判断", true, 1, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fw := &fakeWS{t: t, authErr: tc.authErr}
+			srv := httptest.NewServer(fw)
+			defer srv.Close()
+			c, _ := newTestClient(t, nil)
+			c.wsURL = wstest.URL(srv)
+			if tc.saved {
+				c.store.SetCredentials("bot", "secret")
+			}
+			err := c.Check(context.Background())
+			if errors.Is(err, source.ErrAuthRequired) != tc.wantAuth {
+				t.Errorf("err = %v", err)
+			}
+			if id, _ := c.store.Credentials(); (id != "") != tc.wantKept {
+				t.Errorf("凭证保留 = %v", id != "")
+			}
+		})
+	}
+}
+
+func TestCheck_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := wstest.URL(srv)
+	srv.Close()
+	c, _ := newTestClient(t, nil)
+	c.wsURL = url
+	c.store.SetCredentials("bot", "secret")
+	if err := c.Check(context.Background()); err != nil {
+		t.Errorf("err = %v", err)
+	}
+	if id, _ := c.store.Credentials(); id == "" {
+		t.Error("网络不通时不能清凭证")
 	}
 }
