@@ -110,7 +110,7 @@ func (c *Client) Check(ctx context.Context) error {
 		}
 		return source.ErrAuthRequired
 	}
-	if err := c.loadCredentials(ctx); err != nil {
+	if err := c.loadCredentials(ctx, false); err != nil {
 		return nil
 	}
 	if !c.credentialsRejected(ctx) {
@@ -162,11 +162,22 @@ func (c *Client) Authorize(ctx context.Context) error {
 	if c.botID != "" {
 		return nil
 	}
+	return c.loadWithRetry(ctx, false)
+}
+
+// Reauthorize 实现 source.Authorizer：不管现有凭证，直接扫码创建智能机器人，并要求重新配对。
+// 扫码成功才覆盖旧凭证，失败、超时或被跳过时旧凭证和配对记录原样保留。
+func (c *Client) Reauthorize(ctx context.Context) error {
+	return c.loadWithRetry(ctx, true)
+}
+
+// loadWithRetry 取得凭证（force 为真时一定扫码），失败则退避重试，直到成功或 ctx 结束。
+func (c *Client) loadWithRetry(ctx context.Context, force bool) error {
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
 	backoff := minDelay
 	for ctx.Err() == nil {
-		err := c.loadCredentials(ctx)
+		err := c.loadCredentials(ctx, force)
 		if err == nil {
 			return nil
 		}
@@ -191,7 +202,7 @@ func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 			return nil
 		}
 		if c.botID == "" {
-			if err := c.loadCredentials(ctx); err != nil {
+			if err := c.loadCredentials(ctx, false); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -225,9 +236,9 @@ func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	}
 }
 
-// loadCredentials 使用凭证文件中保存的凭证，没有时扫码创建。凭证不支持手动填写。
-func (c *Client) loadCredentials(ctx context.Context) error {
-	if id, secret := c.store.Credentials(); id != "" && secret != "" {
+// loadCredentials 使用凭证文件中保存的凭证，没有时（或 force 为真时）扫码创建，扫码成功才覆盖旧凭证。凭证不支持手动填写。
+func (c *Client) loadCredentials(ctx context.Context, force bool) error {
+	if id, secret := c.store.Credentials(); !force && id != "" && secret != "" {
 		c.botID, c.secret = id, secret
 	} else {
 		id, secret, err := c.scan(ctx)
@@ -235,6 +246,9 @@ func (c *Client) loadCredentials(ctx context.Context) error {
 			return err
 		}
 		c.store.SetCredentials(id, secret)
+		if force {
+			c.store.SetOwner("") // 重新扫码后必须重新配对，即使扫到的还是同一个机器人
+		}
 		if err := c.store.Save(); err != nil {
 			return fmt.Errorf("保存企业微信凭证失败: %w", err)
 		}
@@ -242,7 +256,7 @@ func (c *Client) loadCredentials(ctx context.Context) error {
 		c.logger.Printf("扫码成功，已接入智能机器人 bot_id=%s，凭证已保存到 %s", id, c.store.Path())
 	}
 	if owner := c.store.Owner(); owner != "" {
-		c.logger.Printf("已配对，只接受 userid=%s 的消息（-relogin 可重新扫码配对）", owner)
+		c.logger.Printf("已配对，只接受 userid=%s 的消息", owner)
 		return nil
 	}
 	c.pairCode = newPairCode()

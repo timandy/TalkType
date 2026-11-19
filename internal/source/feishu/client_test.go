@@ -560,7 +560,7 @@ func TestLoadCredentialsFromStoreResetsTokenAndWarnsWithoutOwner(t *testing.T) {
 	c, logs := newTestClient(t, nil)
 	c.store.SetCredentials("cli_s", "s", config.LarkDomain, "")
 	c.tenantToken, c.tokenExpiry = "old-app-token", time.Now().Add(time.Hour)
-	if err := c.loadCredentials(context.Background()); err != nil {
+	if err := c.loadCredentials(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	if c.tenantToken != "" {
@@ -572,7 +572,7 @@ func TestLoadCredentialsFromStoreResetsTokenAndWarnsWithoutOwner(t *testing.T) {
 
 	c2, logs2 := newTestClient(t, nil)
 	c2.store.SetCredentials("cli_s", "s", "", "ou_me")
-	c2.loadCredentials(context.Background())
+	c2.loadCredentials(context.Background(), false)
 	if c2.owner != "ou_me" || c2.domain != config.FeishuDomain || strings.Contains(logs2.String(), "警告") {
 		t.Errorf("owner=%s domain=%s logs=%s", c2.owner, c2.domain, logs2.String())
 	}
@@ -647,5 +647,38 @@ func TestCheck_Incomplete(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 重新扫码：现有凭证不被使用，扫成功后才覆盖旧凭证。
+func TestReauthorizeReplacesOnSuccess(t *testing.T) {
+	fake := &fakeRegistration{}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c, _ := newTestClient(t, func(cfg *config.Config) { cfg.Login.AutoOpenQR = false })
+	c.accountsBase = func(string) string { return srv.URL }
+	c.store.SetCredentials("cli_old", "old", config.FeishuDomain, "ou_old")
+	if err := c.Reauthorize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, _, owner := c.store.Credentials(); id != "cli_x" || owner != "ou_owner" {
+		t.Errorf("credentials = %s %s", id, owner)
+	}
+}
+
+// 扫码没完成（这里是服务端一直报错，直到超时）时，旧凭证原样保留。
+func TestReauthorizeKeepsOldOnFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", 502) }))
+	defer srv.Close()
+	c, _ := newTestClient(t, func(cfg *config.Config) { cfg.Login.AutoOpenQR = false })
+	c.accountsBase = func(string) string { return srv.URL }
+	c.store.SetCredentials("cli_old", "old", config.FeishuDomain, "ou_old")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Reauthorize(ctx); err == nil {
+		t.Fatal("期望超时错误")
+	}
+	if id, secret, _, owner := c.store.Credentials(); id != "cli_old" || secret != "old" || owner != "ou_old" {
+		t.Errorf("旧凭证被改动: %s %s %s", id, secret, owner)
 	}
 }

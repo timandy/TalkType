@@ -35,6 +35,15 @@ func (f *fakeSource) Check(ctx context.Context) error {
 	return nil
 }
 
+func (f *fakeSource) Reauthorize(ctx context.Context) error {
+	f.rec("reauth:" + f.name)
+	if f.block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
 func (f *fakeSource) Authorize(ctx context.Context) error {
 	f.rec("auth:" + f.name)
 	if f.block {
@@ -152,5 +161,72 @@ func TestMulti_SkipByKey(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(events, ","), "run:") {
 		t.Errorf("被跳过的来源不应启动: %v", events)
+	}
+}
+
+// -relogin：不检查凭证，按顺序逐个“重新扫码、启动”。
+func TestMulti_ReloginReauthorizesInOrder(t *testing.T) {
+	var events []string
+	var mu sync.Mutex
+	mk := func(name string) *fakeSource {
+		return &fakeSource{name: name, events: &events, mu: &mu}
+	}
+	a, b := mk("a"), mk("b")
+	m := NewMulti(log.New(io.Discard, "", 0), a, b)
+	m.Relogin = true
+	if err := m.Run(context.Background(), func(ctx context.Context, msg Message) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	idx := map[string]int{}
+	for i, e := range events {
+		idx[e] = i
+	}
+	for _, e := range []string{"check:a", "check:b", "auth:a", "auth:b"} {
+		if _, ok := idx[e]; ok {
+			t.Errorf("relogin 不应出现 %s: %v", e, events)
+		}
+	}
+	for _, p := range [][2]string{{"reauth:a", "run:a"}, {"run:a", "reauth:b"}, {"reauth:b", "run:b"}} {
+		// run:a 与 reauth:b 并发，只要求 reauth:a 早于 reauth:b
+		if p[0] == "run:a" {
+			p = [2]string{"reauth:a", "reauth:b"}
+		}
+		if idx[p[0]] >= idx[p[1]] {
+			t.Errorf("%s 应早于 %s: %v", p[0], p[1], events)
+		}
+	}
+}
+
+// -relogin 没扫成功（被跳过）时，旧凭证仍然有效就沿用：来源照常启动。
+func TestMulti_ReloginSkippedKeepsOldCredentials(t *testing.T) {
+	var events []string
+	var mu sync.Mutex
+	a := &fakeSource{name: "a", events: &events, mu: &mu, block: true}
+	m := NewMulti(log.New(io.Discard, "", 0), a)
+	m.Relogin = true
+	m.SkipAfter = 20 * time.Millisecond
+	if err := m.Run(context.Background(), func(ctx context.Context, msg Message) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(events, ",")
+	if !strings.Contains(got, "check:a") || !strings.Contains(got, "run:a") {
+		t.Errorf("跳过后应沿用旧凭证并启动: %s", got)
+	}
+}
+
+// -relogin 没扫成功且旧凭证也不可用时，来源不启动。
+func TestMulti_ReloginSkippedWithoutOldCredentials(t *testing.T) {
+	var events []string
+	var mu sync.Mutex
+	a := &fakeSource{name: "a", events: &events, mu: &mu, block: true, needAuth: true}
+	m := NewMulti(log.New(io.Discard, "", 0), a)
+	m.Relogin = true
+	m.SkipAfter = 20 * time.Millisecond
+	m.NoSourceDelay = time.Millisecond
+	if err := m.Run(context.Background(), func(ctx context.Context, msg Message) error { return nil }); !errors.Is(err, ErrNoSource) {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(strings.Join(events, ","), "run:") {
+		t.Errorf("不应启动: %v", events)
 	}
 }

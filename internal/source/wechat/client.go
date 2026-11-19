@@ -310,6 +310,17 @@ func (c *Client) Authorize(ctx context.Context) error {
 	if c.store.Token() != "" {
 		return nil
 	}
+	return c.scanLogin(ctx)
+}
+
+// Reauthorize 实现 source.Authorizer：不管现有凭证，直接扫码登录。扫码成功才覆盖旧凭证，
+// 失败、超时或被跳过时旧凭证原样保留。
+func (c *Client) Reauthorize(ctx context.Context) error {
+	return c.scanLogin(ctx)
+}
+
+// scanLogin 扫码登录，失败则退避重试，直到成功或 ctx 结束。
+func (c *Client) scanLogin(ctx context.Context) error {
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
 	backoff := minDelay

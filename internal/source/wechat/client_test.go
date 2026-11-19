@@ -624,3 +624,46 @@ func TestCheck_MissingOwner(t *testing.T) {
 		t.Error("不完整的凭证应被清除，否则 Authorize 会跳过扫码")
 	}
 }
+
+// 重新扫码：不使用现有登录态，扫成功后才覆盖旧凭证。
+func TestReauthorizeReplacesOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "get_bot_qrcode"):
+			_, _ = w.Write([]byte(`{"qrcode":"qr1","qrcode_img_content":"https://qr"}`))
+		case strings.Contains(r.URL.Path, "get_qrcode_status"):
+			_, _ = w.Write([]byte(`{"status":"confirmed","bot_token":"new_tk","ilink_bot_id":"bot2","ilink_user_id":"user2","baseurl":"https://b"}`))
+		}
+	}))
+	defer srv.Close()
+	c := newTestClient(t, func(c *Client) {
+		c.set.baseURL = srv.URL
+		c.set.qrPollInterval = time.Millisecond
+	})
+	c.store.SetSession("old_tk", "bot1", "user1", "https://a")
+	if err := c.Reauthorize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c.store.Token() != "new_tk" || c.store.Owner() != "user2" {
+		t.Errorf("token=%q owner=%q", c.store.Token(), c.store.Owner())
+	}
+}
+
+// 扫码没完成（服务端一直报错直到超时）时，旧凭证原样保留。
+func TestReauthorizeKeepsOldOnFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", 502) }))
+	defer srv.Close()
+	c := newTestClient(t, func(c *Client) {
+		c.set.baseURL = srv.URL
+		c.set.qrPollInterval = time.Millisecond
+	})
+	c.store.SetSession("old_tk", "bot1", "user1", "https://a")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Reauthorize(ctx); err == nil {
+		t.Fatal("期望超时错误")
+	}
+	if c.store.Token() != "old_tk" || c.store.Owner() != "user1" {
+		t.Errorf("旧凭证被改动: token=%q owner=%q", c.store.Token(), c.store.Owner())
+	}
+}

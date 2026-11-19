@@ -214,7 +214,7 @@ func TestLoadCredentialsPairingState(t *testing.T) {
 	// 没有白名单、没有配对记录：生成配对码
 	c, logs := newTestClient(t, nil)
 	c.store.SetCredentials("b", "s")
-	if err := c.loadCredentials(context.Background()); err != nil || c.botID != "b" {
+	if err := c.loadCredentials(context.Background(), false); err != nil || c.botID != "b" {
 		t.Fatalf("err=%v botID=%s", err, c.botID)
 	}
 	if len(c.pairCode) != 6 || strings.Trim(c.pairCode, "0123456789") != "" {
@@ -229,7 +229,7 @@ func TestLoadCredentialsPairingState(t *testing.T) {
 	c2, logs2 := newTestClient(t, nil)
 	c2.store.SetCredentials("b", "s")
 	c2.store.SetOwner("me")
-	c2.loadCredentials(context.Background())
+	c2.loadCredentials(context.Background(), false)
 	if c2.pairCode != "" || !strings.Contains(logs2.String(), "userid=me") {
 		t.Errorf("pairCode=%q logs=%s", c2.pairCode, logs2.String())
 	}
@@ -641,5 +641,42 @@ func TestCheck_Incomplete(t *testing.T) {
 				t.Error("不完整的凭证应被清除")
 			}
 		})
+	}
+}
+
+// 重新扫码：扫成功后才覆盖旧凭证，并且要求重新配对（即使扫到的是同一个机器人）。
+func TestReauthorizeReplacesAndRepairs(t *testing.T) {
+	srv := httptest.NewServer(&fakeQC{})
+	defer srv.Close()
+	c, _ := newTestClient(t, nil)
+	c.qcBase = srv.URL
+	c.store.SetCredentials("bot_x", "old") // 与扫码结果是同一个 bot_id
+	c.store.SetOwner("me")
+	if err := c.Reauthorize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if id, secret := c.store.Credentials(); id != "bot_x" || secret != "sec_x" {
+		t.Errorf("credentials = %s %s", id, secret)
+	}
+	if c.store.Owner() != "" || c.pairCode == "" {
+		t.Errorf("应重新配对: owner=%q pairCode=%q", c.store.Owner(), c.pairCode)
+	}
+}
+
+// 扫码没完成时，旧凭证和配对记录原样保留。
+func TestReauthorizeKeepsOldOnFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", 502) }))
+	defer srv.Close()
+	c, _ := newTestClient(t, nil)
+	c.qcBase = srv.URL
+	c.store.SetCredentials("bot_old", "old")
+	c.store.SetOwner("me")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Reauthorize(ctx); err == nil {
+		t.Fatal("期望超时错误")
+	}
+	if id, secret := c.store.Credentials(); id != "bot_old" || secret != "old" || c.store.Owner() != "me" {
+		t.Errorf("旧凭证被改动: %s %s %s", id, secret, c.store.Owner())
 	}
 }

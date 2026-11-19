@@ -132,7 +132,7 @@ func (c *Client) Check(ctx context.Context) error {
 		}
 		return source.ErrAuthRequired
 	}
-	if err := c.loadCredentials(ctx); err != nil {
+	if err := c.loadCredentials(ctx, false); err != nil {
 		return nil
 	}
 	if _, _, err := c.endpoint(ctx); errors.Is(err, errBadCredentials) {
@@ -152,11 +152,22 @@ func (c *Client) Authorize(ctx context.Context) error {
 	if c.appID != "" {
 		return nil
 	}
+	return c.loadWithRetry(ctx, false)
+}
+
+// Reauthorize 实现 source.Authorizer：不管现有凭证，直接扫码创建机器人。扫码成功才覆盖旧凭证，
+// 失败、超时或被跳过时旧凭证原样保留。
+func (c *Client) Reauthorize(ctx context.Context) error {
+	return c.loadWithRetry(ctx, true)
+}
+
+// loadWithRetry 取得凭证（force 为真时一定扫码），失败则退避重试，直到成功或 ctx 结束。
+func (c *Client) loadWithRetry(ctx context.Context, force bool) error {
 	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
 	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
 	backoff := minDelay
 	for ctx.Err() == nil {
-		err := c.loadCredentials(ctx)
+		err := c.loadCredentials(ctx, force)
 		if err == nil || errors.Is(err, errScanUnavailable) {
 			return err
 		}
@@ -182,7 +193,7 @@ func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 			return nil
 		}
 		if c.appID == "" {
-			if err := c.loadCredentials(ctx); err != nil {
+			if err := c.loadCredentials(ctx, false); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -217,14 +228,14 @@ func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	}
 }
 
-// loadCredentials 使用凭证文件中保存的凭证，没有时扫码创建。凭证不支持手动填写。
-func (c *Client) loadCredentials(ctx context.Context) error {
+// loadCredentials 使用凭证文件中保存的凭证，没有时（或 force 为真时）扫码创建，扫码成功才覆盖旧凭证。凭证不支持手动填写。
+func (c *Client) loadCredentials(ctx context.Context, force bool) error {
 	// 换了应用就不能再用旧应用的访问凭证发回执。
 	c.tokenMu.Lock()
 	c.tenantToken, c.tokenExpiry = "", time.Time{}
 	c.tokenMu.Unlock()
 
-	if id, secret, domain, owner := c.store.Credentials(); id != "" && secret != "" {
+	if id, secret, domain, owner := c.store.Credentials(); !force && id != "" && secret != "" {
 		if domain == "" {
 			domain = config.FeishuDomain
 		}

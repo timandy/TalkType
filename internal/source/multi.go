@@ -35,6 +35,8 @@ type Authorizer interface {
 	// （此时直接 Run，由 Run 自己退避重试）；没有凭证或凭证被服务端明确拒绝时返回
 	// ErrAuthRequired，并清除失效的凭证。
 	Check(ctx context.Context) error
+	// Reauthorize 不管现有凭证直接扫码，用于 -relogin。扫码成功才覆盖旧凭证，失败或被跳过时旧凭证保留。
+	Reauthorize(ctx context.Context) error
 	// Authorize 引导用户扫码并保存凭证，成功后才返回。
 	Authorize(ctx context.Context) error
 }
@@ -49,6 +51,9 @@ type Multi struct {
 	// SkipInput 非空时，等待扫码期间读到一行 s（不区分大小写）就跳过当前来源。
 	// 不能和同样读标准输入的来源（console）共用，此时留空。
 	SkipInput io.Reader
+	// Relogin 为真时（-relogin），所有需要授权的来源都不检查凭证，按顺序逐个重新扫码：
+	// 扫成功才覆盖旧凭证，中途退出或没扫成功的来源保留旧凭证。
+	Relogin bool
 	// NoSourceDelay 是没有任何来源可用时，打印日志后到退出的等待时间；0 表示用 DefaultNoSourceDelay。
 	NoSourceDelay time.Duration
 }
@@ -68,8 +73,8 @@ func (m *Multi) Name() string {
 }
 
 // Run 分两轮启动各来源：
-//  1. 按配置顺序逐个检查凭证，有效的立即开始运行；没有凭证或凭证失效的先记下，不弹扫码。
-//  2. 检查完后，按同样的顺序逐个弹扫码，前一个授权成功并开始运行后才弹下一个。
+//  1. 按配置顺序逐个检查凭证，有效的立即开始运行；没有凭证或凭证失效的先记下，不弹扫码。\n//     Relogin 时跳过检查，所有需要授权的来源都记下。
+//  2. 检查完后，按同样的顺序逐个弹扫码，前一个授权成功并开始运行后才弹下一个。\n//     Relogin 时每个来源直接扫码，扫成功才覆盖旧凭证；没扫成功则沿用旧凭证。
 //
 // 各来源收到的消息串行交给 handle。某个来源出错退出时，其余来源继续运行；
 // 全部退出后返回各来源的错误。
@@ -114,6 +119,10 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 			start(s)
 			continue
 		}
+		if m.Relogin {
+			pending = append(pending, s)
+			continue
+		}
 		if err := a.Check(ctx); err != nil {
 			if ctx.Err() != nil {
 				break
@@ -155,7 +164,13 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 			hint += "，也可以在本窗口输入 s 回车立即跳过"
 		}
 		m.logger.Printf("正在为 %s 扫码：%s", s.Name(), hint)
-		err := s.(Authorizer).Authorize(authCtx)
+		a := s.(Authorizer)
+		var err error
+		if m.Relogin {
+			err = a.Reauthorize(authCtx)
+		} else {
+			err = a.Authorize(authCtx)
+		}
 		setCur(nil)
 		timer.Stop()
 		cause := context.Cause(authCtx)
@@ -163,6 +178,12 @@ func (m *Multi) Run(ctx context.Context, handle Handler) error {
 		if err != nil {
 			if ctx.Err() != nil {
 				break
+			}
+			// -relogin 没扫成功（跳过、超时或失败）时旧凭证还在，只要还有效就沿用，不丢掉这个来源。
+			if m.Relogin && a.Check(ctx) == nil {
+				m.logger.Printf("%s 重新扫码没有完成，沿用原来的凭证", s.Name())
+				start(s)
+				continue
 			}
 			if errors.Is(cause, errSkipTimeout) || errors.Is(cause, errSkipKey) {
 				m.logger.Printf("已跳过 %s 的扫码（%v），下次启动会再次检查", s.Name(), cause)
