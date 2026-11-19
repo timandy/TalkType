@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -85,10 +86,18 @@ func (c *Client) openURL(u string) {
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		return
 	}
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
+	cmd := openCommand(u)
 	if err := cmd.Start(); err != nil {
 		c.logger.Printf("打开二维码链接失败: %v", err)
 		return
 	}
 	go func() { _ = cmd.Wait() }()
+}
+
+// openCommand 返回用系统默认浏览器打开链接的命令：Windows 用 rundll32，macOS 用 open。
+func openCommand(u string) *exec.Cmd {
+	if runtime.GOOS == "darwin" {
+		return exec.Command("open", u)
+	}
+	return exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
 }

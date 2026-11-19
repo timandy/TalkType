@@ -1,12 +1,12 @@
 # WeType
 
-把微信、飞书、企业微信的消息键入 Windows：快捷键锁定任意窗口，终端后台直写，不抢焦点、不占剪贴板。
+把微信、飞书、企业微信的消息键入 Windows / macOS：快捷键锁定任意窗口，终端后台直写，不抢焦点、不占剪贴板。
 
 在手机上给机器人发一条文字，WeType 就把它键入到电脑当前的光标处，或者键入到用 Alt+. 锁定的窗口、终端。
 三个来源都是扫码即用，不需要公网 IP，凭证和本人身份自动保存，`config.json` 可以不写。
 微信来源基于官方 iLink Bot API（ClawBot，小龙虾），可替代 OpenClaw 的微信渠道插件。
 
-> 依赖 Windows Win32 API（`user32.dll` / `kernel32.dll`），只能在 Windows 上运行。
+> 支持 Windows 和 macOS。Windows 依赖 Win32 API（`user32.dll` / `kernel32.dll`），功能完整；macOS 通过 `osascript` 驱动 System Events 键入，**不支持锁定窗口**（见下文「macOS」）。
 > Linux / 云端环境只能编译与静态检查，无法验证真实键盘输入。
 
 ![WeType 演示：手机语音输入，文字直达电脑窗口](docs/image/wetype-demo.gif)
@@ -61,8 +61,15 @@ wetype.exe -config D:\wetype\config.json
 wetype.exe -config conf\my.json
 ```
 
-## 编译
+## macOS
 
+- 消息始终键入到当前光标位置并回车，没有 Alt+. / Alt+/ 锁定，也没有 `-lock` / `-unlock`。先把目标窗口切到前台、点中输入框，再发消息。
+- 键入用 `osascript` 驱动 System Events 的 `keystroke`，不读写剪贴板。首次使用时系统会要求授权：在“系统设置 → 隐私与安全性 → 辅助功能”里允许运行本程序的终端（或程序），并允许它控制“System Events”。没有授权时日志会提示，且不会重试。
+- 输入法处于中文等输入状态时，`keystroke` 的字符可能先进入输入法的组字，建议键入时切到英文输入法；这一点没有在真机上验证。
+- 打开二维码链接用系统的 `open` 命令。
+- 配置文件、凭证文件的位置规则与 Windows 相同：默认在可执行文件所在目录。
+
+## 编译
 需要 Go 1.22+，无第三方依赖。
 
 在 Windows 上直接编译：
@@ -71,7 +78,13 @@ wetype.exe -config conf\my.json
 go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 ```
 
-在 Linux / macOS 上交叉编译：
+在 macOS 上直接编译：
+
+```bash
+go build -trimpath -ldflags "-s -w" -o wetype ./cmd/wetype
+```
+
+在 Linux / macOS 上交叉编译 Windows 版本：
 
 ```bash
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
@@ -84,6 +97,8 @@ go build ./...
 go vet ./...
 GOOS=windows GOARCH=amd64 go build -o /tmp/wetype.exe ./cmd/wetype
 GOOS=windows GOARCH=amd64 go vet ./...
+GOOS=darwin GOARCH=arm64 go build -o /tmp/wetype ./cmd/wetype
+GOOS=darwin GOARCH=arm64 go vet ./...
 ```
 
 ## 配置说明
@@ -235,7 +250,7 @@ wetype.exe -source console
 - `*_token.json` 含各来源的凭证（微信 bot_token、飞书 App Secret、企业微信 Secret），等同于机器人的收发权限，请勿提交到仓库或外传；程序以 `0600` 写入，已在 `.gitignore` 中忽略
 - 目标窗口以管理员身份运行时，本程序必须也以管理员身份运行，否则按键会被系统静默丢弃；锁定管理员终端时同样无法后台写入
 - UAC 安全桌面、部分游戏和安全控件会拒绝合成键击
-- 仅支持 Windows
+- 仅支持 Windows 和 macOS；macOS 不支持锁定窗口、后台写终端，键入依赖辅助功能权限
 
 ## 项目结构
 
@@ -255,7 +270,7 @@ wetype/
 │   ├── delivery/                投递
 │   │   ├── delivery.go          投递器 Deliverer、Injector、CursorInjector
 │   │   ├── winlock/             快捷键锁定：状态与语义、目标识别、热键、提示卡片
-│   │   └── wintype/             键入：SendInput、切前台输入、后台写终端、进程快照；*_other.go 为非 Windows 占位
+│   │   └── wintype/             键入：SendInput、切前台输入、后台写终端、进程快照；macOS 用 osascript（applescript.go、input_darwin.go）；*_other.go 为其他平台占位
 │   ├── store/                   辅助：凭证（*_token.json）和已处理消息 ID（*_acked.ids）的持久化
 │   └── ws/                      辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用
 │       └── wstest/              测试用的 WebSocket 服务端

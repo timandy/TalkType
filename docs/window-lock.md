@@ -2,6 +2,8 @@
 
 本文说明 WeType 如何把消息投递到目标位置，支持哪些窗口，以及每一类的实现原理和已验证情况。
 
+> 窗口与终端锁定只在 Windows 上实现。macOS 版本不支持锁定，消息始终通过 `osascript` 驱动 System Events 键入到当前光标位置，见 README「macOS」。
+
 ## 1. 整体结构
 
 ```

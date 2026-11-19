@@ -4,8 +4,8 @@ WeType：通过微信官方 iLink Bot API、飞书机器人或企业微信智能
 
 ## 环境约束
 
-- 运行时只支持 Windows（`user32.dll` / `kernel32.dll`）。Linux / 云端只能编译和静态检查，无法验证真实键入。
-- 带 `_windows.go` 后缀的文件只在 Windows 编译，其余平台用 `*_other.go` 占位。新增 Win32 逻辑时两边都要提供实现。
+- 运行时支持 Windows（`user32.dll` / `kernel32.dll`）和 macOS（`osascript` 驱动 System Events，不支持窗口锁定）。Linux / 云端只能编译和静态检查，无法验证真实键入。
+- 带 `_windows.go` 后缀的文件只在 Windows 编译，`_darwin.go` 只在 macOS 编译，其余平台用 `*_other.go` 占位。新增 Win32 逻辑时各平台都要提供实现，macOS 不实现的功能（锁定、后台写终端）返回 `wintype.ErrUnsupported`。
 - `wechat_token.json` 含 bot_token，`feishu_token.json` 含飞书 App Secret，`wecom_token.json` 含企业微信机器人 Secret，都已被 `.gitignore` 忽略。不要提交，不要打印到日志。
 
 ## 常用命令
@@ -14,9 +14,11 @@ WeType：通过微信官方 iLink Bot API、飞书机器人或企业微信智能
 go build ./...
 go vet ./...
 go test ./...
-# 交叉检查 Windows 构建
+# 交叉检查 Windows、macOS 构建
 GOOS=windows GOARCH=amd64 go build -o /tmp/wetype.exe ./cmd/wetype
 GOOS=windows GOARCH=amd64 go vet ./...
+GOOS=darwin GOARCH=arm64 go build -o /tmp/wetype ./cmd/wetype
+GOOS=darwin GOARCH=arm64 go vet ./...
 ```
 
 发布构建（Windows）：
@@ -40,7 +42,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 | `internal/source/console` | 控制台来源（调试用）。 |
 | `internal/delivery` | 投递器 `Deliverer`、`Injector`、`CursorInjector`。 |
 | `internal/delivery/winlock` | Alt+. / Alt+/ 锁定：状态、目标识别、热键、提示卡片。 |
-| `internal/delivery/wintype` | 键入实现：SendInput、切前台输入、后台写终端、进程快照。 |
+| `internal/delivery/wintype` | 键入实现：SendInput、切前台输入、后台写终端、进程快照；macOS 用 osascript（`applescript.go`、`input_darwin.go`）。 |
 | `internal/store` | 辅助：各来源的凭证与本人身份（`*_token.json`）和已处理消息 ID（`*_acked.ids`，一行一个，追加写入）。凭证和记录的读写只走这里。 |
 | `internal/ws` | 辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用；`wstest` 是测试用服务端。握手请求头需与官方 SDK 一致，见 `docs/wecom.md`。 |
 | `docs/window-lock.md` | 锁定功能的原理、支持范围、已知限制。 |

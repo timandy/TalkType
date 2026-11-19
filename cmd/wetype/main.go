@@ -7,7 +7,7 @@
 //   - wecom：扫码创建企业微信智能机器人，通过长连接接收机器人单聊里的消息；
 //   - console：调试用，从本程序的控制台逐行读取输入。
 //
-// 程序仅依赖 Windows win32 API，只能在 Windows 上运行。
+// 程序依赖 Windows win32 API 或 macOS 的 System Events，只能在 Windows 和 macOS 上运行（macOS 不支持窗口锁定）。
 package main
 
 import (
@@ -65,8 +65,8 @@ func main() {
 		os.Exit(wintype.RunConsoleHelper(os.Args[2:]))
 	}
 
-	if runtime.GOOS != "windows" {
-		logger.Fatal("本程序仅支持 Windows")
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		logger.Fatal("本程序仅支持 Windows 和 macOS")
 	}
 	wintype.SetupConsole()
 
@@ -107,7 +107,10 @@ func main() {
 	locker := winlock.New()
 	var injector delivery.Injector = delivery.CursorInjector{}
 	toCursor := func() bool { return true }
-	if err := locker.Start(ctx); err != nil {
+	if runtime.GOOS != "windows" {
+		// 窗口锁定只在 Windows 上实现，其他平台消息始终输入到当前光标位置。
+		logger.Println("当前系统不支持锁定窗口，消息将始终输入到当前光标位置")
+	} else if err := locker.Start(ctx); err != nil {
 		logger.Printf("锁定功能不可用，消息将始终输入到当前光标位置：%v", err)
 	} else {
 		injector = locker
@@ -160,6 +163,14 @@ func main() {
 	logger.Println("已退出")
 }
 
+// cursorHint 返回消息键入到当前光标位置时的使用提示。
+func cursorHint() string {
+	if runtime.GOOS == "darwin" {
+		return "提示：消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框；首次使用需在“系统设置 → 隐私与安全性 → 辅助功能”里允许运行本程序的终端"
+	}
+	return "提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框"
+}
+
 // displayNames 返回各来源的显示名称，用顿号连接。
 func displayNames(names []string) string {
 	display := map[string]string{
@@ -197,7 +208,7 @@ func newWeChatSource(cfg *config.Config, configPath string, logger *log.Logger) 
 		return nil, fmt.Errorf("加载已处理消息记录失败: %w", err)
 	}
 	logger.Printf("凭证文件: %s", tokenPath)
-	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
+	logger.Println(cursorHint())
 	return wechat.NewClient(cfg, st, acked, logger), nil
 }
 
@@ -213,7 +224,7 @@ func newFeishuSource(cfg *config.Config, configPath string, logger *log.Logger) 
 		return nil, fmt.Errorf("加载已处理消息记录失败: %w", err)
 	}
 	logger.Printf("飞书凭证文件: %s", tokenPath)
-	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
+	logger.Println(cursorHint())
 	return feishu.NewClient(cfg, st, acked, logger), nil
 }
 
@@ -229,7 +240,7 @@ func newWeComSource(cfg *config.Config, configPath string, logger *log.Logger) (
 		return nil, fmt.Errorf("加载已处理消息记录失败: %w", err)
 	}
 	logger.Printf("企业微信凭证文件: %s", tokenPath)
-	logger.Println("提示：未锁定时，消息将输入到当前光标位置并回车，请先激活目标窗口并定位到输入框")
+	logger.Println(cursorHint())
 	return wecom.NewClient(cfg, st, acked, logger), nil
 }
 

@@ -13,5 +13,8 @@ type Options struct {
 	MaxRetries int           // 失败重试次数
 }
 
+// ErrUnsupported 表示当前平台不支持该功能（例如非 Windows 平台的窗口锁定、后台写终端）。
+var ErrUnsupported = errors.New("wintype: 当前平台不支持")
+
 // ErrTargetClosed 表示锁定的目标窗口已经不存在。
 var ErrTargetClosed = errors.New("wintype: 目标窗口已关闭")
