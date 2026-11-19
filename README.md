@@ -39,6 +39,8 @@
    wetype.exe -source wecom
    ```
 
+   同时启用多个来源时，用英文逗号分隔（逗号两边的空格会被忽略），例如 `wetype.exe -source wechat,feishu`。启动时先按书写顺序逐个检查：凭证存在且能连上的来源立即开始监听；没有凭证或凭证已失效的先记下。检查完后，再按同样的顺序逐个弹出扫码，前一个连通后才弹出下一个。每个来源最多等 5 分钟，超时没扫，或在本窗口输入 s 回车，就跳过它去弹下一个（包括最后一个）；被跳过的来源本次不启动，下次启动会再检查。中途退出也没关系，下次启动重新按此流程检查。网络暂时不通导致无法判断时，不会当作失效，该来源直接启动并自动重连。
+
 3. 首次运行会打印扫码链接并自动打开浏览器，用手机扫码确认（企业微信还要按提示给机器人发一次配对码）
 4. 把目标窗口切到前台并点中输入框，或按 Alt+. 锁定目标窗口、终端
 5. 在手机上给机器人发送文字，程序会自动键入并回车
@@ -93,7 +95,7 @@ GOOS=windows GOARCH=amd64 go vet ./...
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `source` | `"wechat"` | `wechat`（微信）、`feishu`（飞书）、`wecom`（企业微信）或 `console`（调试用），不区分大小写。命令行 `-source` 可临时覆盖 |
+| `source` | `"wechat"` | `wechat`（微信）、`feishu`（飞书）、`wecom`（企业微信）或 `console`（调试用），不区分大小写。可用英文逗号分隔同时启用多个，如 `"wechat, feishu"`，按顺序逐个扫码；包含 `console` 时只启用 `console`，其余来源不启动。命令行 `-source` 可临时覆盖 |
 | `login.auto_open_qr` | `true` | 扫码登录时自动用浏览器打开二维码链接 |
 | `reconnect.min_delay_ms` | `1000` | 断线重连的初始退避时间 |
 | `reconnect.max_delay_ms` | `60000` | 最大退避时间，每次失败翻倍 |
@@ -106,7 +108,7 @@ GOOS=windows GOARCH=amd64 go vet ./...
 
 ## 消息来源
 
-用 `config.json` 的 `source` 选择，也可以用命令行 `-source` 临时覆盖。三个来源都只处理文字消息：
+用 `config.json` 的 `source` 选择，也可以用命令行 `-source` 临时覆盖，多个来源用英文逗号分隔。多个来源同时运行时，消息按到达顺序串行键入。`-relogin` 会清除所有已启用来源的凭证。三个来源都只处理文字消息：
 图片、语音、文件等只在控制台打印“忽略…消息：暂只支持文字消息”，不输入、不回复。
 
 已处理的消息 ID 逐行追加到 `wechat_acked.ids` / `feishu_acked.ids` / `wecom_acked.ids`（与凭证文件同目录），
@@ -240,7 +242,7 @@ wetype/
 ├── internal/
 │   ├── config/                  配置：共用配置的结构、默认值、校验
 │   ├── source/                  消息来源
-│   │   ├── source.go            来源接口 Source、消息 Message、Handler、ErrDiscarded
+│   │   ├── source.go            来源接口 Source、消息 Message、Handler、ErrDiscarded，以及同时运行多个来源的 Multi
 │   │   ├── wechat/              微信（iLink Bot API）：签名、扫码、长轮询、ACK、重连、回执
 │   │   ├── feishu/              飞书：扫码创建机器人、长连接、pbbp2 帧编解码、事件处理、回执
 │   │   ├── wecom/               企业微信：扫码创建智能机器人、长连接、配对、回执

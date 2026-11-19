@@ -281,6 +281,50 @@ var _ source.Source = (*Client)(nil)
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "微信" }
 
+// Check 实现 source.Authorizer：没有登录态，或服务端返回会话过期（-14）时返回 ErrAuthRequired。
+// 其余情况（包括网络错误、超时）视为暂时无法判断，返回 nil。
+func (c *Client) Check(ctx context.Context) error {
+	if c.store.Token() == "" {
+		return source.ErrAuthRequired
+	}
+	// 用已保存的游标短轮询一次，只看会话是否有效；游标不推进、消息不处理，之后会被正式轮询重新取到。
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := c.getUpdates(probeCtx, c.store.Buf(), c.set.pollTimeout)
+	if err != nil || resp == nil {
+		return nil
+	}
+	if resp.Ret == -14 || resp.ErrCode == -14 {
+		c.logger.Println("微信会话已过期（-14），清除本地凭证")
+		c.resetSession()
+		return source.ErrAuthRequired
+	}
+	return nil
+}
+
+// Authorize 实现 source.Authorizer：凭证文件中没有登录态时扫码登录，失败则退避重试。
+func (c *Client) Authorize(ctx context.Context) error {
+	if c.store.Token() != "" {
+		return nil
+	}
+	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
+	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
+	backoff := minDelay
+	for ctx.Err() == nil {
+		err := c.login(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		c.logger.Printf("登录失败: %v，%s 后重试", err, backoff)
+		_ = sleepCtx(ctx, backoff+jitter(backoff))
+		backoff = nextBackoff(backoff, maxDelay)
+	}
+	return ctx.Err()
+}
+
 // Run 实现 source.Source，常驻运行：未登录先扫码，随后进入长轮询；异常时按退避策略恢复。
 func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	c.handle = handle

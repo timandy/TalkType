@@ -144,3 +144,29 @@ func TestValidate_MaxDelayRaisedToMin(t *testing.T) {
 		t.Errorf("MaxDelayMS = %d, want 3000", c.Reconnect.MaxDelayMS)
 	}
 }
+
+func TestValidate_MultiSource(t *testing.T) {
+	c := Default()
+	c.Source = " WeChat , feishu,, WeCom "
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.Sources(), "|"); got != "wechat|feishu|wecom" {
+		t.Errorf("Sources() = %q", got)
+	}
+	for _, bad := range []string{"wechat,wechat", "wechat, dingtalk", "WeChat,wechat"} {
+		c := Default()
+		c.Source = bad
+		if err := c.Validate(); err == nil {
+			t.Errorf("source %q 应报错", bad)
+		}
+	}
+}
+
+func TestValidate_ConsoleOnly(t *testing.T) {
+	c := Default()
+	c.Source = "wechat, Console,feishu"
+	if err := c.Validate(); err != nil || c.Source != SourceConsole {
+		t.Errorf("got %q err=%v", c.Source, err)
+	}
+}

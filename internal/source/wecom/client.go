@@ -98,6 +98,82 @@ var _ source.Source = (*Client)(nil)
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "企业微信" }
 
+// Check 实现 source.Authorizer：没有凭证，或认证时服务端明确返回凭证无效时返回
+// ErrAuthRequired，其余情况（包括网络错误、超时）视为暂时无法判断，返回 nil。
+func (c *Client) Check(ctx context.Context) error {
+	if id, secret := c.store.Credentials(); id == "" || secret == "" {
+		return source.ErrAuthRequired
+	}
+	if err := c.loadCredentials(ctx); err != nil {
+		return nil
+	}
+	if !c.credentialsRejected(ctx) {
+		return nil
+	}
+	c.logger.Printf("%v，清除本地凭证", errInvalidCredentials)
+	if err := c.store.Delete(); err != nil {
+		c.logger.Printf("删除凭证文件失败: %v", err)
+	}
+	c.botID, c.secret = "", ""
+	return source.ErrAuthRequired
+}
+
+// credentialsRejected 连一次长连接并认证，只在服务端明确返回凭证无效时返回 true，随后立即断开。
+func (c *Client) credentialsRejected(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
+	conn, err := ws.Dial(probeCtx, c.wsRT, c.wsURL)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	go func() {
+		<-probeCtx.Done()
+		conn.Close()
+	}()
+	if err := send(conn, cmdSubscribe, newReqID(cmdSubscribe), map[string]string{"bot_id": c.botID, "secret": c.secret}); err != nil {
+		return false
+	}
+	for {
+		op, data, err := conn.ReadMessage()
+		if err != nil {
+			return false
+		}
+		if op != ws.OpText && op != ws.OpBinary {
+			continue
+		}
+		var f frame
+		if json.Unmarshal(data, &f) != nil || f.Cmd != "" || !strings.HasPrefix(f.Headers.ReqID, cmdSubscribe) {
+			continue
+		}
+		return f.ErrCode == errcodeInvalidCredentials
+	}
+}
+
+// Authorize 实现 source.Authorizer：凭证文件中没有凭证时扫码创建智能机器人，失败则退避重试。
+// 配对码在连上之后由用户发送，不在这里等待。
+func (c *Client) Authorize(ctx context.Context) error {
+	if c.botID != "" {
+		return nil
+	}
+	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
+	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
+	backoff := minDelay
+	for ctx.Err() == nil {
+		err := c.loadCredentials(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		c.logger.Printf("登录失败: %v，%s 后重试", err, backoff)
+		_ = c.sleep(ctx, backoff+jitter(backoff))
+		backoff = nextBackoff(backoff, maxDelay)
+	}
+	return ctx.Err()
+}
+
 // Run 实现 source.Source：准备好凭证后保持长连接，断开时按退避策略重连。
 func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	c.handle = handle

@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,7 +63,7 @@ func main() {
 	wintype.SetupConsole()
 
 	configPath := flag.String("config", "config.json", "配置文件路径")
-	sourceName := flag.String("source", "", "临时覆盖 config.json 的 source：wechat（微信）、feishu（飞书）、wecom（企业微信）或 console（调试用，从本窗口逐行输入），不区分大小写")
+	sourceName := flag.String("source", "", "临时覆盖 config.json 的 source：wechat（微信）、feishu（飞书）、wecom（企业微信）或 console（调试用，从本窗口逐行输入），不区分大小写；多个用英文逗号分隔，如 wechat,feishu，按顺序逐个扫码")
 	relogin := flag.Bool("relogin", false, "清除本地凭证并强制重新扫码登录（wechat、feishu、wecom）")
 	lock := flag.Bool("lock", false, "在目标终端中运行：通知正在运行的本程序实例锁定该终端")
 	unlock := flag.Bool("unlock", false, "通知正在运行的本程序实例解除锁定")
@@ -82,8 +83,12 @@ func main() {
 	if *sourceName != "" {
 		cfg.Source = *sourceName
 	}
+	rawSource := cfg.Source
 	if err := cfg.Validate(); err != nil {
 		logger.Fatalf("配置不合法: %v", err)
+	}
+	if cfg.Source == config.SourceConsole && strings.Contains(rawSource, ",") {
+		logger.Println("source 包含 console：只启用 console，其余来源不启动")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -101,21 +106,31 @@ func main() {
 		logger.Println("快捷键：Alt+. 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；Alt+/ 在任意位置解除锁定")
 	}
 
-	var src source.Source
-	switch cfg.Source {
-	case config.SourceWeChat:
-		src, err = newWeChatSource(cfg, *configPath, *relogin)
-	case config.SourceFeishu:
-		src, err = newFeishuSource(cfg, *configPath, *relogin)
-	case config.SourceWeCom:
-		src, err = newWeComSource(cfg, *configPath, *relogin)
-	case config.SourceConsole:
-		src = console.New(os.Stdin, logger, console.Options{CursorDelay: consoleCursorDelay, ToCursor: toCursor})
+	var sources []source.Source
+	for _, name := range cfg.Sources() {
+		var s source.Source
+		switch name {
+		case config.SourceWeChat:
+			s, err = newWeChatSource(cfg, *configPath, *relogin)
+		case config.SourceFeishu:
+			s, err = newFeishuSource(cfg, *configPath, *relogin)
+		case config.SourceWeCom:
+			s, err = newWeComSource(cfg, *configPath, *relogin)
+		case config.SourceConsole:
+			s = console.New(os.Stdin, logger, console.Options{CursorDelay: consoleCursorDelay, ToCursor: toCursor})
+		}
+		if err != nil {
+			logger.Fatal(err)
+		}
+		sources = append(sources, s)
 	}
-	if err != nil {
-		logger.Fatal(err)
+	// 单个来源直接运行；多个来源按配置顺序逐个授权、逐个启动。
+	var src source.Source = sources[0]
+	if len(sources) > 1 {
+		multi := source.NewMulti(logger, sources...)
+		multi.SkipInput = os.Stdin
+		src = multi
 	}
-
 	deliverer := delivery.NewDeliverer(injector, injectOptions(cfg))
 	logger.Printf("消息来源: %s", src.Name())
 	if err := src.Run(ctx, deliverer.Deliver); err != nil && ctx.Err() == nil {

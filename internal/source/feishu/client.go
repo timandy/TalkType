@@ -116,6 +116,50 @@ var _ source.Source = (*Client)(nil)
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "飞书" }
 
+// Check 实现 source.Authorizer：没有凭证，或服务端明确拒绝凭证时返回 ErrAuthRequired，
+// 其余情况（包括网络错误）视为暂时无法判断，返回 nil。
+func (c *Client) Check(ctx context.Context) error {
+	if id, secret, _, _ := c.store.Credentials(); id == "" || secret == "" {
+		return source.ErrAuthRequired
+	}
+	if err := c.loadCredentials(ctx); err != nil {
+		return nil
+	}
+	if _, _, err := c.endpoint(ctx); errors.Is(err, errBadCredentials) {
+		c.logger.Printf("%v，清除本地凭证", err)
+		c.store.ClearCredentials()
+		if err := c.store.Save(); err != nil {
+			c.logger.Printf("保存凭证文件失败: %v", err)
+		}
+		c.appID = ""
+		return source.ErrAuthRequired
+	}
+	return nil
+}
+
+// Authorize 实现 source.Authorizer：凭证文件中没有凭证时扫码创建机器人，失败则退避重试。
+func (c *Client) Authorize(ctx context.Context) error {
+	if c.appID != "" {
+		return nil
+	}
+	minDelay := time.Duration(c.cfg.Reconnect.MinDelayMS) * time.Millisecond
+	maxDelay := time.Duration(c.cfg.Reconnect.MaxDelayMS) * time.Millisecond
+	backoff := minDelay
+	for ctx.Err() == nil {
+		err := c.loadCredentials(ctx)
+		if err == nil || errors.Is(err, errScanUnavailable) {
+			return err
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		c.logger.Printf("登录失败: %v，%s 后重试", err, backoff)
+		_ = c.sleep(ctx, backoff+jitter(backoff))
+		backoff = nextBackoff(backoff, maxDelay)
+	}
+	return ctx.Err()
+}
+
 // Run 实现 source.Source：准备好凭证后保持长连接，断开时按退避策略重连。
 func (c *Client) Run(ctx context.Context, handle source.Handler) error {
 	c.handle = handle

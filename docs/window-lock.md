@@ -15,7 +15,7 @@
 ```
 
 - **消息来源**只负责拿到消息和自己的确认语义。微信来源负责去重、ACK、游标、只接受本人、回执；飞书、企业微信来源负责长连接、去重、只接受本人、回执（飞书还要回确认帧）；控制台来源逐行读取标准输入。
-  用 `source`（或 `-source`）选择 `wechat|feishu|wecom|console`。
+  用 `source`（或 `-source`）选择 `wechat|feishu|wecom|console`，可用英文逗号分隔同时启用多个。
 - **投递**统一由 `delivery.Deliverer` 完成：串行投递，避免多条消息文字交错。锁定的目标已关闭时弹通知，并返回
   `source.ErrDiscarded`，来源据此丢弃该消息（微信来源会 ACK 并推进游标，飞书来源回 200，都不会无限重试）。
 

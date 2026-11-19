@@ -33,7 +33,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 | --- | --- |
 | `cmd/wetype/main.go` | 进程生命周期、参数、依赖装配。不放业务逻辑。 |
 | `internal/config` | 共用配置的结构、默认值、校验。无内部依赖。 |
-| `internal/source` | 来源接口 `Source`、消息 `Message`、`Handler`、`ErrDiscarded`。 |
+| `internal/source` | 来源接口 `Source`、消息 `Message`、`Handler`、`ErrDiscarded`，多来源组合 `Multi`。 |
 | `internal/source/wechat` | 微信来源：签名、扫码、长轮询、ACK、重连、回执。只接受扫码人。 |
 | `internal/source/feishu` | 飞书来源：扫码创建机器人、长连接（手写 protobuf 帧）、事件处理、回执。只处理机器人单聊，只接受扫码人。 |
 | `internal/source/wecom` | 企业微信来源：扫码创建智能机器人、长连接（JSON 帧）、配对、心跳、回执。只处理机器人单聊，只接受配对的本人。 |

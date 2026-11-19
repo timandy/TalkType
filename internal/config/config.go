@@ -32,7 +32,7 @@ const defaultMaxAckedIDs = 500
 
 // Config 对应 config.json。
 type Config struct {
-	Source    string          `json:"source"` // wechat（默认）、feishu、wecom 或 console
+	Source    string          `json:"source"` // 逗号分隔可同时启用多个，如 wechat,feishu；单个取值 wechat（默认）、feishu、wecom 或 console
 	Login     LoginConfig     `json:"login"`
 	Reconnect ReconnectConfig `json:"reconnect"`
 	Inject    InjectConfig    `json:"inject"`
@@ -108,14 +108,11 @@ func Load(path string) (*Config, error) {
 
 // Validate 规范化 source 并补齐缺省值。
 func (c *Config) Validate() error {
-	c.Source = strings.ToLower(strings.TrimSpace(c.Source))
-	switch c.Source {
-	case "":
-		c.Source = SourceWeChat
-	case SourceWeChat, SourceFeishu, SourceWeCom, SourceConsole:
-	default:
-		return fmt.Errorf("source 只能是 %s、%s、%s 或 %s，当前为 %q", SourceWeChat, SourceFeishu, SourceWeCom, SourceConsole, c.Source)
+	names, err := parseSources(c.Source)
+	if err != nil {
+		return err
 	}
+	c.Source = strings.Join(names, ",")
 	if c.Reconnect.MinDelayMS <= 0 {
 		c.Reconnect.MinDelayMS = 1000
 	}
@@ -129,4 +126,40 @@ func (c *Config) Validate() error {
 		c.Ack.MaxAckedIDs = defaultMaxAckedIDs
 	}
 	return nil
+}
+
+// Sources 返回 Source 拆分后的来源名列表，顺序与配置一致。需先调用 Validate。
+func (c *Config) Sources() []string {
+	return strings.Split(c.Source, ",")
+}
+
+// parseSources 把逗号分隔的 source 拆成规范化（小写、去空白）的来源名，顺序不变。
+// 空串按默认的微信处理；空项（如末尾多余的逗号）忽略；包含 console 时只保留 console；来源名重复或不认识时报错。
+func parseSources(s string) ([]string, error) {
+	var names []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(s, ",") {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if name == "" {
+			continue
+		}
+		switch name {
+		case SourceWeChat, SourceFeishu, SourceWeCom, SourceConsole:
+		default:
+			return nil, fmt.Errorf("source 只能是 %s、%s、%s 或 %s（多个用英文逗号分隔），当前包含 %q", SourceWeChat, SourceFeishu, SourceWeCom, SourceConsole, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("source 中的 %q 重复了", name)
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		names = []string{SourceWeChat}
+	}
+	// console 独占标准输入，包含它时只启用 console，其余来源不启动。
+	if len(names) > 1 && seen[SourceConsole] {
+		names = []string{SourceConsole}
+	}
+	return names, nil
 }
