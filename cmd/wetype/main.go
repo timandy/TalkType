@@ -70,7 +70,7 @@ func main() {
 	}
 	wintype.SetupConsole()
 
-	configPath := flag.String("config", "config.json", "配置文件路径")
+	configPath := flag.String("config", "config.json", "配置文件路径；相对路径按 wetype.exe 所在目录解析（不是当前目录），凭证文件放在配置文件所在目录")
 	sourceName := flag.String("source", "", "临时覆盖 config.json 的 source：wechat（微信）、feishu（飞书）、wecom（企业微信）或 console（调试用，从本窗口逐行输入），不区分大小写；多个用英文逗号分隔，如 wechat,feishu，按顺序逐个扫码")
 	relogin := flag.Bool("relogin", false, "强制重新扫码登录（wechat、feishu、wecom）：按配置顺序逐个来源重新扫码，扫成功才覆盖旧凭证，没扫成功的来源沿用旧凭证")
 	lock := flag.Bool("lock", false, "在目标终端中运行：通知正在运行的本程序实例锁定该终端")
@@ -81,6 +81,7 @@ func main() {
 		os.Exit(runLockCommand(*lock))
 	}
 
+	*configPath = resolveConfigPath(exeDir(), *configPath)
 	cfg, err := config.Load(*configPath)
 	if errors.Is(err, config.ErrNotFound) {
 		logger.Printf("未找到配置文件 %s，使用默认配置", *configPath)
@@ -254,6 +255,27 @@ func runLockCommand(lock bool) int {
 		return 1
 	}
 	return 0
+}
+
+// exeDir 返回 wetype.exe 所在目录；取不到时返回空串（此时相对路径相对当前目录）。
+func exeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	return filepath.Dir(exe)
+}
+
+// resolveConfigPath 把配置文件路径解析为绝对路径：绝对路径原样使用，
+// 相对路径拼在 exe 所在目录下，这样从哪个目录启动都读同一份配置和凭证。
+func resolveConfigPath(dir, p string) string {
+	if filepath.IsAbs(p) || dir == "" {
+		return p
+	}
+	return filepath.Join(dir, p)
 }
 
 func absPath(p string) string {
