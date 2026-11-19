@@ -49,7 +49,15 @@ const (
 	wecomAckedFile  = "wecom_acked.ids"
 )
 
-var logger = log.New(os.Stdout, "[wetype] ", log.LstdFlags)
+// 日志格式：时间在最前，然后是前缀（log.Lmsgprefix 把前缀从行首移到时间之后、正文之前）。
+const logFlags = log.LstdFlags | log.Lmsgprefix
+
+var logger = log.New(os.Stdout, "[wetype] ", logFlags)
+
+// newSourceLogger 返回带渠道名前缀的日志，如 [wetype-wechat]，多个来源同时运行时用来区分。
+func newSourceLogger(name string) *log.Logger {
+	return log.New(os.Stdout, "[wetype-"+name+"] ", logFlags)
+}
 
 func main() {
 	// 后台写终端的辅助子进程，必须在任何其他初始化之前处理。
@@ -109,15 +117,16 @@ func main() {
 	var sources []source.Source
 	for _, name := range cfg.Sources() {
 		var s source.Source
+		srcLogger := newSourceLogger(name)
 		switch name {
 		case config.SourceWeChat:
-			s, err = newWeChatSource(cfg, *configPath, *relogin)
+			s, err = newWeChatSource(cfg, *configPath, *relogin, srcLogger)
 		case config.SourceFeishu:
-			s, err = newFeishuSource(cfg, *configPath, *relogin)
+			s, err = newFeishuSource(cfg, *configPath, *relogin, srcLogger)
 		case config.SourceWeCom:
-			s, err = newWeComSource(cfg, *configPath, *relogin)
+			s, err = newWeComSource(cfg, *configPath, *relogin, srcLogger)
 		case config.SourceConsole:
-			s = console.New(os.Stdin, logger, console.Options{CursorDelay: consoleCursorDelay, ToCursor: toCursor})
+			s = console.New(os.Stdin, srcLogger, console.Options{CursorDelay: consoleCursorDelay, ToCursor: toCursor})
 		}
 		if err != nil {
 			logger.Fatal(err)
@@ -152,7 +161,7 @@ func injectOptions(cfg *config.Config) wintype.Options {
 }
 
 // newWeChatSource 加载凭证并创建微信来源。
-func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*wechat.Client, error) {
+func newWeChatSource(cfg *config.Config, configPath string, relogin bool, logger *log.Logger) (*wechat.Client, error) {
 	tokenPath := resolvePath(configPath, wechatTokenFile)
 
 	st, err := store.Load(tokenPath)
@@ -175,7 +184,7 @@ func newWeChatSource(cfg *config.Config, configPath string, relogin bool) (*wech
 }
 
 // newFeishuSource 加载凭证并创建飞书来源。
-func newFeishuSource(cfg *config.Config, configPath string, relogin bool) (*feishu.Client, error) {
+func newFeishuSource(cfg *config.Config, configPath string, relogin bool, logger *log.Logger) (*feishu.Client, error) {
 	tokenPath := resolvePath(configPath, feishuTokenFile)
 	st, err := store.LoadFeishu(tokenPath)
 	if err != nil {
@@ -197,7 +206,7 @@ func newFeishuSource(cfg *config.Config, configPath string, relogin bool) (*feis
 }
 
 // newWeComSource 加载凭证并创建企业微信来源。
-func newWeComSource(cfg *config.Config, configPath string, relogin bool) (*wecom.Client, error) {
+func newWeComSource(cfg *config.Config, configPath string, relogin bool, logger *log.Logger) (*wecom.Client, error) {
 	tokenPath := resolvePath(configPath, wecomTokenFile)
 	st, err := store.LoadWeCom(tokenPath)
 	if err != nil {

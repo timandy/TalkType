@@ -67,7 +67,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 ## 代码风格
 
 - 提交前运行 `gofmt`，保证 `go vet` 通过。
-- 日志输出到控制台，前缀 `[wetype]`。
+- 日志输出到控制台，格式为 时间 + 前缀 + 正文（`log.Lmsgprefix`），前缀 `[wetype]`；各来源的日志前缀为 `[wetype-渠道名]`（如 `[wetype-wechat]`），由 `cmd/wetype` 创建后传给来源。
 - 注释、日志、提交信息、文档使用中文，与现有代码保持一致。
 - `config.json` 只放各来源共用的配置（`source`、`login`、`reconnect`、`inject`、`ack`）。各来源的地址和协议参数内置在各自的包里；凭证、本人身份、飞书站点由扫码自动获得，存进 `*_token.json`。不要为这些加配置项。新增共用配置项时同步更新 `internal/config` 的结构与默认值、根目录 `config.json`、README「配置说明」表格；测试会检查根目录 `config.json` 与默认值一致，且不允许未知字段。
 - 测试与被测文件同目录，命名 `xxx_test.go`。Windows 专属测试用 `_windows_test.go` 后缀。
