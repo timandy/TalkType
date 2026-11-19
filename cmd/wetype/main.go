@@ -114,8 +114,16 @@ func main() {
 		logger.Println("快捷键：Alt+. 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；Alt+/ 在任意位置解除锁定")
 	}
 
+	// 先打印 wetype 自己的启动信息，再创建各来源（来源创建时会打印各自的凭证文件等日志）。
+	names := cfg.Sources()
+	consoleOnly := len(names) == 1 && names[0] == config.SourceConsole
+	if !consoleOnly && !*relogin {
+		logger.Println("提示：需要换账号或重新扫码时，加 -relogin 参数启动；多个来源按配置顺序逐个重新扫码，扫成功才覆盖旧凭证")
+	}
+	logger.Printf("消息来源: %s", displayNames(names))
+
 	var sources []source.Source
-	for _, name := range cfg.Sources() {
+	for _, name := range names {
 		var s source.Source
 		srcLogger := newSourceLogger(name)
 		switch name {
@@ -136,23 +144,34 @@ func main() {
 	// console 不需要授权，单独使用时直接运行；其余情况（包括只有一个来源）都走 Multi：
 	// 先检查凭证，没有授权就弹扫码，超时没扫则打印日志后自动退出。
 	var src source.Source
-	if _, isConsole := sources[0].(*console.Source); isConsole {
+	if consoleOnly {
 		src = sources[0]
 	} else {
 		multi := source.NewMulti(logger, sources...)
 		multi.SkipInput = os.Stdin
 		multi.Relogin = *relogin
 		src = multi
-		if !*relogin {
-			logger.Println("提示：需要换账号或重新扫码时，加 -relogin 参数启动；多个来源按配置顺序逐个重新扫码，扫成功才覆盖旧凭证")
-		}
 	}
 	deliverer := delivery.NewDeliverer(injector, injectOptions(cfg))
-	logger.Printf("消息来源: %s", src.Name())
 	if err := src.Run(ctx, deliverer.Deliver); err != nil && ctx.Err() == nil {
 		logger.Fatalf("运行中止: %v", err)
 	}
 	logger.Println("已退出")
+}
+
+// displayNames 返回各来源的显示名称，用顿号连接。
+func displayNames(names []string) string {
+	display := map[string]string{
+		config.SourceWeChat:  wechat.SourceName,
+		config.SourceFeishu:  feishu.SourceName,
+		config.SourceWeCom:   wecom.SourceName,
+		config.SourceConsole: console.SourceName,
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = display[n]
+	}
+	return strings.Join(out, "、")
 }
 
 func injectOptions(cfg *config.Config) wintype.Options {

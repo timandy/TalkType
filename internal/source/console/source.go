@@ -40,7 +40,10 @@ func New(in io.Reader, logger *log.Logger, opts Options) *Source {
 var _ source.Source = (*Source)(nil)
 
 // Name 实现 source.Source。
-func (s *Source) Name() string { return "控制台" }
+// SourceName 是来源的显示名称。
+const SourceName = "控制台"
+
+func (s *Source) Name() string { return SourceName }
 
 // Run 实现 source.Source。输入结束（EOF）或 ctx 结束时返回。
 func (s *Source) Run(ctx context.Context, handle source.Handler) error {

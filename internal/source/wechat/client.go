@@ -283,7 +283,10 @@ func (c *Client) pollQRStatus(ctx context.Context, base, qrcode string) (*QRStat
 var _ source.Source = (*Client)(nil)
 
 // Name 实现 source.Source。
-func (c *Client) Name() string { return "微信" }
+// SourceName 是来源的显示名称。
+const SourceName = "微信"
+
+func (c *Client) Name() string { return SourceName }
 
 // Check 实现 source.Authorizer：凭证缺失或不完整（没有 token 或扫码人），或服务端返回会话过期（-14、HTTP 401/403）时返回 ErrAuthRequired。
 // 其余情况（包括网络错误、超时）视为暂时无法判断，返回 nil。

@@ -99,7 +99,10 @@ func NewClient(cfg *config.Config, st *store.WeComStore, acked *store.AckedIDs, 
 var _ source.Source = (*Client)(nil)
 
 // Name 实现 source.Source。
-func (c *Client) Name() string { return "企业微信" }
+// SourceName 是来源的显示名称。
+const SourceName = "企业微信"
+
+func (c *Client) Name() string { return SourceName }
 
 // Check 实现 source.Authorizer：凭证缺失或不完整（没有 bot_id 或 secret），或认证时服务端明确返回凭证无效时返回
 // ErrAuthRequired，其余情况（包括网络错误、超时）视为暂时无法判断，返回 nil。

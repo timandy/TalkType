@@ -118,7 +118,10 @@ func defaultOpenBase(domain string) string {
 var _ source.Source = (*Client)(nil)
 
 // Name 实现 source.Source。
-func (c *Client) Name() string { return "飞书" }
+// SourceName 是来源的显示名称。
+const SourceName = "飞书"
+
+func (c *Client) Name() string { return SourceName }
 
 // Check 实现 source.Authorizer：凭证缺失或不完整（没有 app_id、secret 或扫码人），或服务端明确拒绝凭证时返回 ErrAuthRequired，
 // 其余情况（包括网络错误）视为暂时无法判断，返回 nil。
