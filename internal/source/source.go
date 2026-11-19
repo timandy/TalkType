@@ -12,6 +12,7 @@ package source
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Message 是一条待投递的文本消息。
@@ -34,3 +35,15 @@ type Source interface {
 
 // ErrDiscarded 表示消息因为锁定的目标已关闭而被丢弃。
 var ErrDiscarded = errors.New("锁定的目标已关闭，消息已丢弃")
+
+// IsStale 报告消息是否是 since 之前创建的（例如程序启动前积压的历史消息）。
+// created 是消息创建时间的 Unix 时间戳，毫秒或秒都可以；未知（<=0）时不算过期。
+func IsStale(created int64, since time.Time) bool {
+	if created <= 0 {
+		return false
+	}
+	if created < 100_000_000_000 { // 小于 1e11 视为秒（毫秒时间戳在 2001 年之后都大于 1e12）
+		created *= 1000
+	}
+	return created < since.UnixMilli()
+}

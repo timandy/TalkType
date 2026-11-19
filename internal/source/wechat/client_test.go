@@ -667,3 +667,26 @@ func TestReauthorizeKeepsOldOnFailure(t *testing.T) {
 		t.Errorf("旧凭证被改动: token=%q owner=%q", c.store.Token(), c.store.Owner())
 	}
 }
+
+// 启动前积压的历史消息：不键入，但要确认（推进游标），新消息照常键入。
+func TestHandleMessage_StaleHistoryNotTyped(t *testing.T) {
+	c := newTestClient(t, nil)
+	var typed []string
+	c.handle = func(_ context.Context, m source.Message) error { typed = append(typed, m.Text); return nil }
+	before := c.startedAt.Add(-time.Hour).UnixMilli()
+	after := c.startedAt.Add(time.Second).UnixMilli()
+	ctx := context.Background()
+
+	if !c.handleMessage(ctx, &WeixinMessage{MessageType: msgTypeUser, FromUserID: "u", MessageID: 1, CreateTimeMs: before, ItemList: textMsg("旧")}) {
+		t.Error("历史消息应返回 true 以推进游标")
+	}
+	if len(typed) != 0 || !c.acked.Has("1") || c.staleN != 1 {
+		t.Errorf("typed=%v acked=%v staleN=%d", typed, c.acked.Has("1"), c.staleN)
+	}
+	if !c.handleMessage(ctx, &WeixinMessage{MessageType: msgTypeUser, FromUserID: "u", MessageID: 2, CreateTimeMs: after, ItemList: textMsg("新")}) {
+		t.Error("want true")
+	}
+	if len(typed) != 1 || typed[0] != "新" {
+		t.Errorf("typed = %v", typed)
+	}
+}

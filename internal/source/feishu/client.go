@@ -62,6 +62,9 @@ type Client struct {
 
 	handle source.Handler
 
+	// startedAt 是客户端创建的时间。此前创建的消息是启动前积压的历史消息，只确认、不键入。
+	startedAt time.Time
+
 	// 当前使用的凭证。
 	appID, appSecret, domain, owner string
 
@@ -94,6 +97,7 @@ func NewClient(cfg *config.Config, st *store.FeishuStore, acked *store.AckedIDs,
 		openBase:     defaultOpenBase,
 		sleep:        sleepCtx,
 		fragments:    make(map[string]*partialEvent),
+		startedAt:    time.Now(),
 	}
 }
 
@@ -474,6 +478,7 @@ type messageEvent struct {
 	} `json:"sender"`
 	Message struct {
 		MessageID   string `json:"message_id"`
+		CreateTime  string `json:"create_time"` // 毫秒时间戳
 		ChatType    string `json:"chat_type"`
 		MessageType string `json:"message_type"`
 		Content     string `json:"content"`
@@ -525,6 +530,12 @@ func (c *Client) processEvent(ctx context.Context, payload []byte) int {
 		return http.StatusOK
 	}
 	from := ev.Sender.SenderID.OpenID
+
+	if created, _ := strconv.ParseInt(ev.Message.CreateTime, 10, 64); source.IsStale(created, c.startedAt) {
+		c.logger.Printf("忽略启动前积压的历史消息 id=%s（不键入）", id)
+		c.markAcked(id)
+		return http.StatusOK
+	}
 
 	if ev.Message.ChatType != "p2p" {
 		c.logger.Printf("忽略群聊消息 id=%s：只支持机器人单聊", id)

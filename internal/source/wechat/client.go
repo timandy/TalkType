@@ -69,6 +69,10 @@ type Client struct {
 	logger     *log.Logger
 	httpClient *http.Client
 	handle     source.Handler
+
+	// startedAt 是客户端创建的时间。此前创建的消息是启动前积压的历史消息，只确认、不键入。
+	startedAt time.Time
+	staleN    int // 本轮轮询忽略的历史消息条数，pollLoop 单协程使用
 }
 
 // NewClient 创建 iLink 客户端。acked 记录已处理的消息 ID，用于游标重放时去重。
@@ -76,7 +80,7 @@ func NewClient(cfg *config.Config, st *store.TokenStore, acked *store.AckedIDs, 
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Client{cfg: cfg, set: defaultSettings, store: st, acked: acked, logger: logger, httpClient: &http.Client{}}
+	return &Client{cfg: cfg, set: defaultSettings, store: st, acked: acked, logger: logger, httpClient: &http.Client{}, startedAt: time.Now()}
 }
 
 func (c *Client) baseURL() string {
@@ -411,6 +415,10 @@ func (c *Client) pollLoop(ctx context.Context, onHealthy func()) error {
 				allOK = false
 			}
 		}
+		if c.staleN > 0 {
+			c.logger.Printf("已忽略 %d 条启动前积压的历史消息（不键入）", c.staleN)
+			c.staleN = 0
+		}
 		if !allOK {
 			// 不推进游标，下一轮会重新收到该批消息；已处理的会通过 ACK 记录去重。
 			return errors.New("有消息输入失败，保留游标等待重试")
@@ -472,6 +480,11 @@ func (c *Client) handleMessage(ctx context.Context, msg *WeixinMessage) bool {
 
 	if msg.ContextToken != "" {
 		c.store.SetContextToken(msg.FromUserID, msg.ContextToken)
+	}
+	if source.IsStale(msg.CreateTimeMs, c.startedAt) {
+		c.staleN++
+		c.markAcked(key)
+		return true
 	}
 
 	text := extractText(msg)

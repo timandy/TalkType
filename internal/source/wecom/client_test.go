@@ -680,3 +680,31 @@ func TestReauthorizeKeepsOldOnFailure(t *testing.T) {
 		t.Errorf("旧凭证被改动: %s %s %s", id, secret, c.store.Owner())
 	}
 }
+
+func TestHandleMessage_StaleHistoryNotTyped(t *testing.T) {
+	c, logs := newTestClient(t, nil)
+	c.store.SetOwner("zhangsan")
+	h := &recordingHandler{}
+	c.handle = h.handle
+	mk := func(id string, created int64) *frame {
+		f := callback("r-"+id, id, "single", "text", "hi", "zhangsan")
+		var body map[string]any
+		_ = json.Unmarshal(f.Body, &body)
+		body["create_time"] = created
+		f.Body, _ = json.Marshal(body)
+		return f
+	}
+	c.handleMessage(context.Background(), nil, mk("old", c.startedAt.Add(-time.Hour).Unix()))
+	if h.count() != 0 || !c.acked.Has("old") || !strings.Contains(logs.String(), "积压的历史消息") {
+		t.Errorf("count=%d acked=%v logs=%s", h.count(), c.acked.Has("old"), logs.String())
+	}
+	c.handleMessage(context.Background(), nil, mk("new", c.startedAt.Add(time.Minute).Unix()))
+	if h.count() != 1 {
+		t.Errorf("新消息应键入: count=%d", h.count())
+	}
+	// 服务端不带时间时不做过期判断
+	c.handleMessage(context.Background(), nil, callback("r3", "m3", "single", "text", "hi", "zhangsan"))
+	if h.count() != 2 {
+		t.Errorf("无时间的消息应键入: count=%d", h.count())
+	}
+}

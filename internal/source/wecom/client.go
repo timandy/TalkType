@@ -68,6 +68,9 @@ type Client struct {
 
 	handle source.Handler
 
+	// startedAt 是客户端创建的时间。此前创建的消息是启动前积压的历史消息，只确认、不键入。
+	startedAt time.Time
+
 	botID, secret string
 	// pairCode 是未配对时等待用户发来的配对码；已配对时为空。
 	pairCode string
@@ -89,6 +92,7 @@ func NewClient(cfg *config.Config, st *store.WeComStore, acked *store.AckedIDs, 
 		wsURL:      defaultWSURL,
 		heartbeat:  defaultHeartbeat,
 		sleep:      sleepCtx,
+		startedAt:  time.Now(),
 	}
 }
 
@@ -441,8 +445,10 @@ type messageBody struct {
 	From     struct {
 		UserID string `json:"userid"`
 	} `json:"from"`
-	MsgType string `json:"msgtype"`
-	Text    struct {
+	// CreateTime 是消息创建时间（秒或毫秒时间戳）。官方文档未列出该字段，服务端不给时为 0，不做过期判断。
+	CreateTime int64  `json:"create_time"`
+	MsgType    string `json:"msgtype"`
+	Text       struct {
 		Content string `json:"content"`
 	} `json:"text"`
 }
@@ -465,6 +471,11 @@ func (c *Client) handleMessage(ctx context.Context, conn *ws.Conn, f *frame) {
 	}
 	id, from := m.MsgID, m.From.UserID
 	if id != "" && c.acked.Has(id) {
+		return
+	}
+	if source.IsStale(m.CreateTime, c.startedAt) {
+		c.logger.Printf("忽略启动前积压的历史消息 id=%s（不键入）", id)
+		c.markAcked(id)
 		return
 	}
 	if m.ChatType != "single" {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -680,5 +681,28 @@ func TestReauthorizeKeepsOldOnFailure(t *testing.T) {
 	}
 	if id, secret, _, owner := c.store.Credentials(); id != "cli_old" || secret != "old" || owner != "ou_old" {
 		t.Errorf("旧凭证被改动: %s %s %s", id, secret, owner)
+	}
+}
+
+func TestProcessEvent_StaleHistoryNotTyped(t *testing.T) {
+	c, logs := newTestClient(t, nil)
+	h := &recordingHandler{}
+	c.handle = h.handle
+	c.owner = "ou_owner"
+	withTime := func(msgID string, ms int64) []byte {
+		var m map[string]any
+		_ = json.Unmarshal(messageEventJSON(msgID, "p2p", "text", `{"text":"hi"}`, "ou_owner"), &m)
+		m["event"].(map[string]any)["message"].(map[string]any)["create_time"] = strconv.FormatInt(ms, 10)
+		b, _ := json.Marshal(m)
+		return b
+	}
+	if got := c.processEvent(context.Background(), withTime("old", c.startedAt.Add(-time.Hour).UnixMilli())); got != 200 {
+		t.Errorf("历史消息应回 200，got %d", got)
+	}
+	if len(h.msgs) != 0 || !c.acked.Has("old") || !strings.Contains(logs.String(), "积压的历史消息") {
+		t.Errorf("msgs=%v acked=%v logs=%s", h.msgs, c.acked.Has("old"), logs.String())
+	}
+	if got := c.processEvent(context.Background(), withTime("new", c.startedAt.Add(time.Second).UnixMilli())); got != 200 || len(h.msgs) != 1 {
+		t.Errorf("新消息应键入: got=%d msgs=%v", got, h.msgs)
 	}
 }
