@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
+
+	"wetype/internal/browser"
 )
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -57,18 +57,7 @@ func (c *Client) openURL(u string) {
 	if !strings.HasPrefix(u, "https://") {
 		return
 	}
-	cmd := openCommand(u)
-	if err := cmd.Start(); err != nil {
+	if err := browser.Open(u); err != nil {
 		c.logger.Printf("打开扫码页面失败: %v", err)
-		return
 	}
-	go func() { _ = cmd.Wait() }()
-}
-
-// openCommand 返回用系统默认浏览器打开链接的命令：Windows 用 rundll32，macOS 用 open。
-func openCommand(u string) *exec.Cmd {
-	if runtime.GOOS == "darwin" {
-		return exec.Command("open", u)
-	}
-	return exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
 }

@@ -43,6 +43,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 | `internal/delivery` | 投递器 `Deliverer`、`Injector`、`CursorInjector`。 |
 | `internal/delivery/winlock` | Alt+. / Alt+/ 锁定：状态、目标识别、热键、提示卡片。 |
 | `internal/delivery/wintype` | 键入实现：SendInput、切前台输入、后台写终端、进程快照；macOS 用 osascript（`applescript.go`、`input_darwin.go`）。 |
+| `internal/browser` | 辅助：用系统默认浏览器打开扫码链接（Windows 用 rundll32，macOS 用 open），各来源共用。 |
 | `internal/store` | 辅助：各来源的凭证与本人身份（`*_token.json`）和已处理消息 ID（`*_acked.ids`，一行一个，追加写入）。凭证和记录的读写只走这里。 |
 | `internal/ws` | 辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用；`wstest` 是测试用服务端。握手请求头需与官方 SDK 一致，见 `docs/wecom.md`。 |
 | `docs/window-lock.md` | 锁定功能的原理、支持范围、已知限制。 |

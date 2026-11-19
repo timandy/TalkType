@@ -271,6 +271,7 @@ wetype/
 │   │   ├── delivery.go          投递器 Deliverer、Injector、CursorInjector
 │   │   ├── winlock/             快捷键锁定：状态与语义、目标识别、热键、提示卡片
 │   │   └── wintype/             键入：SendInput、切前台输入、后台写终端、进程快照；macOS 用 osascript（applescript.go、input_darwin.go）；*_other.go 为其他平台占位
+│   ├── browser/                 辅助：用系统默认浏览器打开扫码链接（Windows 用 rundll32，macOS 用 open）
 │   ├── store/                   辅助：凭证（*_token.json）和已处理消息 ID（*_acked.ids）的持久化
 │   └── ws/                      辅助：最小 WebSocket 客户端（RFC 6455），飞书和企业微信共用
 │       └── wstest/              测试用的 WebSocket 服务端
@@ -290,10 +291,10 @@ wetype/
 分层约定：
 
 - `cmd` 只负责进程生命周期与依赖装配
-- `internal/source/*` 只是消息来源，只依赖 `internal/source`、`internal/config`、`internal/store`、`internal/ws`，不调用键盘输入
+- `internal/source/*` 只是消息来源，只依赖 `internal/source`、`internal/config`、`internal/store`、`internal/ws`、`internal/browser`，不调用键盘输入
 - `internal/delivery` 负责投递，Win32 调用只在 `delivery/wintype` 和 `delivery/winlock` 的 `*_windows.go` 里，其他包不依赖 `syscall` / `unsafe`
 - 凭证和消息记录的读写全部通过 `internal/store`
-- `internal/config`、`internal/store`、`internal/ws` 没有内部依赖（`ws/wstest` 只依赖 `ws`），可被任意层引用
+- `internal/config`、`internal/store`、`internal/ws`、`internal/browser` 没有内部依赖（`ws/wstest` 只依赖 `ws`），可被任意层引用
 
 ## 许可证
 
