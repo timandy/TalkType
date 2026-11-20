@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/delivery/wintype"
 )
 
 // 视为“终端会话”的 shell 进程。

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/browser"
+	"github.com/timandy/talktype/internal/browser"
 )
 
 func randomHex(n int) string {

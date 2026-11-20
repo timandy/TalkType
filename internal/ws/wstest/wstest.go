@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"wetype/internal/ws"
+	"github.com/timandy/talktype/internal/ws"
 )
 
 // ServerConn 是服务端这一侧的连接。

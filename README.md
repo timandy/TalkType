@@ -1,15 +1,15 @@
-# WeType
+# TalkType
 
 把微信、飞书、企业微信的消息键入 Windows / macOS：快捷键锁定任意窗口，终端后台直写，不抢焦点、不占剪贴板。
 
-在手机上给机器人发一条文字，WeType 就把它键入到电脑当前的光标处，或者键入到用 Alt+. 锁定的窗口、终端。
+在手机上给机器人发一条文字，TalkType 就把它键入到电脑当前的光标处，或者键入到用 Alt+. 锁定的窗口、终端。
 三个来源都是扫码即用，不需要公网 IP，凭证和本人身份自动保存，`config.json` 可以不写。
 微信来源基于官方 iLink Bot API（ClawBot，小龙虾），可替代 OpenClaw 的微信渠道插件。
 
 > 支持 Windows 和 macOS。Windows 依赖 Win32 API（`user32.dll` / `kernel32.dll`），功能完整；macOS 通过 `osascript` 驱动 System Events 键入，**不支持锁定窗口**（见下文「macOS」）。
 > Linux / 云端环境只能编译与静态检查，无法验证真实键盘输入。
 
-![WeType 演示：手机语音输入，文字直达电脑窗口](docs/image/wetype-demo.gif)
+![TalkType 演示：手机语音输入，文字直达电脑窗口](docs/image/talktype-demo.gif)
 
 ## 特性
 
@@ -26,21 +26,21 @@
 
 ## 快速开始
 
-1. 准备 `wetype.exe`（`config.json` 可省略，不放时使用默认配置）
+1. 准备 `talktype.exe`（`config.json` 可省略，不放时使用默认配置）
 2. 运行程序，默认来源是微信：
 
    ```bat
-   wetype.exe
+   talktype.exe
    ```
 
    用飞书或企业微信时加 `-source`，或把 `config.json` 的 `source` 改成对应的值：
 
    ```bat
-   wetype.exe -source feishu
-   wetype.exe -source wecom
+   talktype.exe -source feishu
+   talktype.exe -source wecom
    ```
 
-   同时启用多个来源时，用英文逗号分隔（逗号两边的空格会被忽略），例如 `wetype.exe -source wechat,feishu`。启动时先按书写顺序逐个检查：凭证存在且能连上的来源立即开始监听；没有凭证、凭证文件缺字段（如 token、secret、扫码人）或服务端明确拒绝凭证的先记下。检查完后，再按同样的顺序逐个弹出扫码，前一个连通后才弹出下一个。每个来源最多等 5 分钟，超时没扫，或在本窗口输入 s 回车，就跳过它去弹下一个（包括最后一个）；被跳过的来源本次不启动，下次启动会再检查。只启用一个来源时同样适用：没有授权会弹扫码，5 分钟内没扫就跳过。全部扫码结束后如果没有任何来源可用，会打印一行日志，5 秒后自动退出。中途退出也没关系，下次启动重新按此流程检查。网络暂时不通导致无法判断时，不会当作失效，该来源直接启动并自动重连。
+   同时启用多个来源时，用英文逗号分隔（逗号两边的空格会被忽略），例如 `talktype.exe -source wechat,feishu`。启动时先按书写顺序逐个检查：凭证存在且能连上的来源立即开始监听；没有凭证、凭证文件缺字段（如 token、secret、扫码人）或服务端明确拒绝凭证的先记下。检查完后，再按同样的顺序逐个弹出扫码，前一个连通后才弹出下一个。每个来源最多等 5 分钟，超时没扫，或在本窗口输入 s 回车，就跳过它去弹下一个（包括最后一个）；被跳过的来源本次不启动，下次启动会再检查。只启用一个来源时同样适用：没有授权会弹扫码，5 分钟内没扫就跳过。全部扫码结束后如果没有任何来源可用，会打印一行日志，5 秒后自动退出。中途退出也没关系，下次启动重新按此流程检查。网络暂时不通导致无法判断时，不会当作失效，该来源直接启动并自动重连。
 
 3. 首次运行会打印扫码链接并自动打开浏览器，用手机扫码确认（企业微信还要按提示给机器人发一次配对码）
 4. 把目标窗口切到前台并点中输入框，或按 Alt+. 锁定目标窗口、终端
@@ -49,16 +49,16 @@
 程序常驻运行，登录成功后无需再次扫码。凭证失效或想换账号时：
 
 ```bat
-wetype.exe -relogin
+talktype.exe -relogin
 ```
 
 `-relogin` 对所有启用的来源生效（企业微信的配对也会重新做），但不是一次全清：按配置顺序逐个来源处理，每个来源先弹扫码，**扫成功才覆盖旧凭证**，再轮到下一个。中途退出时，还没轮到的来源凭证原样保留；某个来源没扫成功（输入 `s` 回车、等满 5 分钟跳过或扫码失败）时，只要旧凭证仍然有效就沿用，来源照常启动。启动时程序也会打印一行提示。
 
-配置文件默认是 `wetype.exe` 所在目录下的 `config.json`，不是启动时的当前目录，所以从哪个目录启动都读同一份配置和凭证。`-config` 给相对路径时同样拼在 exe 所在目录下，给绝对路径则原样使用（凭证文件也会放在该文件所在目录）：
+配置文件默认是 `talktype.exe` 所在目录下的 `config.json`，不是启动时的当前目录，所以从哪个目录启动都读同一份配置和凭证。`-config` 给相对路径时同样拼在 exe 所在目录下，给绝对路径则原样使用（凭证文件也会放在该文件所在目录）：
 
 ```bat
-wetype.exe -config D:\wetype\config.json
-wetype.exe -config conf\my.json
+talktype.exe -config D:\talktype\config.json
+talktype.exe -config conf\my.json
 ```
 
 ## macOS
@@ -75,19 +75,19 @@ wetype.exe -config conf\my.json
 在 Windows 上直接编译：
 
 ```bat
-go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
+go build -trimpath -ldflags "-s -w" -o talktype.exe ./cmd/talktype
 ```
 
 在 macOS 上直接编译：
 
 ```bash
-go build -trimpath -ldflags "-s -w" -o wetype ./cmd/wetype
+go build -trimpath -ldflags "-s -w" -o talktype ./cmd/talktype
 ```
 
 在 Linux / macOS 上交叉编译 Windows 版本：
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o talktype.exe ./cmd/talktype
 ```
 
 静态检查（云端可用）：
@@ -95,9 +95,9 @@ GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o wetype.exe ./cm
 ```bash
 go build ./...
 go vet ./...
-GOOS=windows GOARCH=amd64 go build -o wetype.exe ./cmd/wetype
+GOOS=windows GOARCH=amd64 go build -o talktype.exe ./cmd/talktype
 GOOS=windows GOARCH=amd64 go vet ./...
-GOOS=darwin GOARCH=arm64 go build -o wetype ./cmd/wetype
+GOOS=darwin GOARCH=arm64 go build -o talktype ./cmd/talktype
 GOOS=darwin GOARCH=arm64 go vet ./...
 ```
 
@@ -182,7 +182,7 @@ GOOS=darwin GOARCH=arm64 go vet ./...
 ### 控制台（`console`，调试用）
 
 ```bat
-wetype.exe -source console
+talktype.exe -source console
 ```
 
 不连接任何服务，每在本程序窗口输入一行并回车，就当作收到一条消息。先切到目标终端按 Alt+. 锁定，再回到本窗口输入即可。
@@ -210,7 +210,7 @@ wetype.exe -source console
     终端停靠在 IDE 主窗口里时也能识别。终端单独成窗口时约 0.1 秒。
     IDE 只会调整正在显示的终端的尺寸，由此确定锁定哪个标签。Reworked 2025 和 Classic 引擎、Window / Float / 停靠等显示模式都适用。
     通知里会显示锁定标签的提示符，方便确认。
-  - 也可以在目标终端里运行 `wetype.exe -lock` 精确锁定它；`-unlock` 解除。
+  - 也可以在目标终端里运行 `talktype.exe -lock` 精确锁定它；`-unlock` 解除。
 - **其他窗口**（浏览器、IDE 的代码编辑器、终端被隐藏的 IDE 窗口等）：发送时短暂切到该窗口输入，再切回原来的窗口。
   凡是探测不到正在显示的终端，都按这种方式处理。
 - 锁定的窗口或终端关闭后，消息不再发送（该消息被丢弃），并弹出提示。
@@ -243,7 +243,7 @@ wetype.exe -source console
 | 偶尔重复输入 | 来源没有提供消息 ID 时无法去重，属于预期情况 |
 | 频繁出现重新扫码 | 平台侧主动失效或重复绑定顶号，重新扫码即可 |
 
-日志直接输出到控制台，每行以时间开头，然后是前缀 `[wetype]`；各来源自己的日志带渠道名，如 `[wetype-wechat]`、`[wetype-feishu]`、`[wetype-wecom]`、`[wetype-console]`，同时运行多个来源时可据此区分。可以用日志判断登录、收消息、ACK 与重连状态。
+日志直接输出到控制台，每行以时间开头，然后是前缀 `[talktype]`；各来源自己的日志带渠道名，如 `[talktype-wechat]`、`[talktype-feishu]`、`[talktype-wecom]`、`[talktype-console]`，同时运行多个来源时可据此区分。可以用日志判断登录、收消息、ACK 与重连状态。
 
 ## 安全与限制
 
@@ -255,9 +255,9 @@ wetype.exe -source console
 ## 项目结构
 
 ```
-wetype/
+talktype/
 ├── cmd/
-│   └── wetype/
+│   └── talktype/
 │       └── main.go              程序入口：参数、选择消息来源、装配投递与锁定
 ├── internal/
 │   ├── config/                  配置：共用配置的结构、默认值、校验
@@ -280,7 +280,7 @@ wetype/
 │   ├── wechat.md                微信来源的协议细节
 │   ├── feishu.md                飞书来源的协议细节与调研记录
 │   ├── wecom.md                 企业微信来源的协议细节与调研记录
-│   └── image/                   README 演示动画（wetype-demo.gif）
+│   └── image/                   README 演示动画（talktype-demo.gif）
 ├── config.json                  运行配置（可省略）
 ├── *_token.json                 运行后生成：各来源的凭证与本人身份
 ├── *_acked.ids                  运行后生成：已处理消息 ID，一行一个

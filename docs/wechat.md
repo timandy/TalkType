@@ -6,7 +6,7 @@
 ## 1. 整体流程
 
 ```
-手机微信 ──► iLink 服务端 ──getupdates（长轮询）──► WeType
+手机微信 ──► iLink 服务端 ──getupdates（长轮询）──► TalkType
                                                       │
                                     签名 → 去重 → 键入 → ACK
                                                       │

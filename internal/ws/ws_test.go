@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"wetype/internal/ws"
-	"wetype/internal/ws/wstest"
+	"github.com/timandy/talktype/internal/ws"
+	"github.com/timandy/talktype/internal/ws/wstest"
 )
 
 func TestReadWriteAndControlFrames(t *testing.T) {

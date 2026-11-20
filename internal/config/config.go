@@ -1,4 +1,4 @@
-// Package config 定义 WeType 的配置结构、默认值与校验规则。
+// Package config 定义 TalkType 的配置结构、默认值与校验规则。
 //
 // config.json 只放各来源共用的配置：消息来源 source、扫码、重连、键入和回执。
 // 各来源的服务地址、协议参数都内置在各自的包里；凭证、站点（飞书 / Lark）、本人身份

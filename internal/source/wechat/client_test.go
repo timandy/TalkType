@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"wetype/internal/config"
-	"wetype/internal/source"
-	"wetype/internal/store"
+	"github.com/timandy/talktype/internal/config"
+	"github.com/timandy/talktype/internal/source"
+	"github.com/timandy/talktype/internal/store"
 )
 
 func newTestClient(t *testing.T, mutate func(*Client)) *Client {
@@ -296,7 +296,7 @@ func TestSendText(t *testing.T) {
 		t.Fatalf("path=%q msg=%v", gotPath, m)
 	}
 	if m.ToUserID != "user1" || m.MessageType != msgTypeBot || m.MessageState != stateFinish || m.ContextToken != "ctx" ||
-		!strings.HasPrefix(m.ClientID, "wetype-") || len(m.ItemList) != 1 || m.ItemList[0].TextItem.Text != "pong" {
+		!strings.HasPrefix(m.ClientID, "talktype-") || len(m.ItemList) != 1 || m.ItemList[0].TextItem.Text != "pong" {
 		t.Errorf("msg = %+v", m)
 	}
 }

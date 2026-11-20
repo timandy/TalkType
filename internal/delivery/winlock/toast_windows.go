@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	toastClassName = "WeTypeToast"
+	toastClassName = "TalkTypeToast"
 	toastTimerID   = 2
 	toastFrame     = 15 * time.Millisecond
 

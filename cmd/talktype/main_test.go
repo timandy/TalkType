@@ -7,8 +7,8 @@ import (
 )
 
 func TestResolveConfigPath(t *testing.T) {
-	dir := filepath.Join(os.TempDir(), "app", "wetype")
-	abs := filepath.Join(os.TempDir(), "etc", "wetype.json") // 带盘符的绝对路径
+	dir := filepath.Join(os.TempDir(), "app", "talktype")
+	abs := filepath.Join(os.TempDir(), "etc", "talktype.json") // 带盘符的绝对路径
 	for _, tc := range []struct{ dir, in, want string }{
 		{dir, "config.json", filepath.Join(dir, "config.json")},
 		{dir, filepath.Join("conf", "a.json"), filepath.Join(dir, "conf", "a.json")},

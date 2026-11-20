@@ -30,7 +30,7 @@ const (
 
 	copyLock   = 1
 	copyUnlock = 2
-	className  = "WeTypeHost"
+	className  = "TalkTypeHost"
 )
 
 var hwndMessage = ^uintptr(2) // HWND_MESSAGE = -3

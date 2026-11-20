@@ -4,7 +4,7 @@ package wintype
 
 // 非 Windows 平台的占位实现，仅用于通过编译。
 
-const HelperArg = "--wetype-console-helper"
+const HelperArg = "--talktype-console-helper"
 
 func ForegroundWindow() uintptr                            { return 0 }
 func RootWindow(h uintptr) uintptr                         { return h }

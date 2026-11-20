@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"wetype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/delivery/wintype"
 )
 
 const maxTitleRunes = 40

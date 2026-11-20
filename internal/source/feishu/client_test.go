@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"wetype/internal/config"
-	"wetype/internal/source"
-	"wetype/internal/store"
-	"wetype/internal/ws"
-	"wetype/internal/ws/wstest"
+	"github.com/timandy/talktype/internal/config"
+	"github.com/timandy/talktype/internal/source"
+	"github.com/timandy/talktype/internal/store"
+	"github.com/timandy/talktype/internal/ws"
+	"github.com/timandy/talktype/internal/ws/wstest"
 )
 
 func newTestClient(t *testing.T, mutate func(*config.Config)) (*Client, *bytes.Buffer) {

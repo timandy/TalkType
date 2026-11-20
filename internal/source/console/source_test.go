@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"wetype/internal/source"
+	"github.com/timandy/talktype/internal/source"
 )
 
 func TestRun_SendsNonEmptyLinesUntilEOF(t *testing.T) {

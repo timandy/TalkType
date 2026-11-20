@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/config"
-	"wetype/internal/source"
-	"wetype/internal/store"
+	"github.com/timandy/talktype/internal/config"
+	"github.com/timandy/talktype/internal/source"
+	"github.com/timandy/talktype/internal/store"
 )
 
 const (
@@ -545,7 +545,7 @@ func (c *Client) sendText(ctx context.Context, to, text, contextToken string) er
 	req := SendMessageReq{
 		Msg: &WeixinMessage{
 			ToUserID:     to,
-			ClientID:     "wetype-" + randomHex(8),
+			ClientID:     "talktype-" + randomHex(8),
 			MessageType:  msgTypeBot,
 			MessageState: stateFinish,
 			ContextToken: contextToken,

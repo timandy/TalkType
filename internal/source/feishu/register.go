@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/config"
+	"github.com/timandy/talktype/internal/config"
 )
 
 // 扫码创建机器人：飞书的应用注册接口，OAuth 设备码流程（init → begin → poll）。

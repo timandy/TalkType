@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"wetype/internal/delivery/wintype"
-	"wetype/internal/source"
+	"github.com/timandy/talktype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/source"
 )
 
 type fakeInjector struct {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/source"
+	"github.com/timandy/talktype/internal/source"
 )
 
 // Options 控制控制台来源的行为。

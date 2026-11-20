@@ -5,7 +5,7 @@ package winlock
 import (
 	"context"
 
-	"wetype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/delivery/wintype"
 )
 
 // Start 在非 Windows 平台不可用。

@@ -20,10 +20,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"wetype/internal/config"
-	"wetype/internal/source"
-	"wetype/internal/store"
-	"wetype/internal/ws"
+	"github.com/timandy/talktype/internal/config"
+	"github.com/timandy/talktype/internal/source"
+	"github.com/timandy/talktype/internal/store"
+	"github.com/timandy/talktype/internal/ws"
 )
 
 const (

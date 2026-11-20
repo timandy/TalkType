@@ -1,6 +1,6 @@
 # 构建产物 / 可执行文件
-/wetype.exe
-/wetype
+/talktype.exe
+/talktype
 *.exe
 *.dll
 *.so

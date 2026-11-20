@@ -1,6 +1,6 @@
 # AGENTS.md
 
-WeType：通过微信官方 iLink Bot API、飞书机器人或企业微信智能机器人接收文本消息，用 Win32 `SendInput` 键入到当前光标处，或键入到用 Alt+. 锁定的窗口 / 终端。Go 1.22，无第三方依赖，模块名 `wetype`。
+TalkType：通过微信官方 iLink Bot API、飞书机器人或企业微信智能机器人接收文本消息，用 Win32 `SendInput` 键入到当前光标处，或键入到用 Alt+. 锁定的窗口 / 终端。Go 1.22，无第三方依赖，模块名 `github.com/timandy/talktype`。
 
 ## 环境约束
 
@@ -15,25 +15,25 @@ go build ./...
 go vet ./...
 go test ./...
 # 交叉检查 Windows、macOS 构建
-GOOS=windows GOARCH=amd64 go build -o /tmp/wetype.exe ./cmd/wetype
+GOOS=windows GOARCH=amd64 go build -o talktype.exe ./cmd/talktype
 GOOS=windows GOARCH=amd64 go vet ./...
-GOOS=darwin GOARCH=arm64 go build -o /tmp/wetype ./cmd/wetype
+GOOS=darwin GOARCH=arm64 go build -o talktype ./cmd/talktype
 GOOS=darwin GOARCH=arm64 go vet ./...
 ```
 
 发布构建（Windows）：
 
 ```bat
-go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
+go build -trimpath -ldflags "-s -w" -o talktype.exe ./cmd/talktype
 ```
 
-消息来源由 `config.json` 的 `source`（`wechat` / `feishu` / `wecom` / `console`，不区分大小写）选择，命令行 `-source` 可临时覆盖。调试时可用 `wetype.exe -source console` 在控制台输入文字。
+消息来源由 `config.json` 的 `source`（`wechat` / `feishu` / `wecom` / `console`，不区分大小写）选择，命令行 `-source` 可临时覆盖。调试时可用 `talktype.exe -source console` 在控制台输入文字。
 
 ## 目录与分层
 
 | 路径 | 职责 |
 | --- | --- |
-| `cmd/wetype/main.go` | 进程生命周期、参数、依赖装配。不放业务逻辑。 |
+| `cmd/talktype/main.go` | 进程生命周期、参数、依赖装配。不放业务逻辑。 |
 | `internal/config` | 共用配置的结构、默认值、校验。无内部依赖。 |
 | `internal/source` | 来源接口 `Source`、消息 `Message`、`Handler`、`ErrDiscarded`，多来源组合 `Multi`。 |
 | `internal/source/wechat` | 微信来源：签名、扫码、长轮询、ACK、重连、回执。只接受扫码人。 |
@@ -71,7 +71,7 @@ go build -trimpath -ldflags "-s -w" -o wetype.exe ./cmd/wetype
 ## 代码风格
 
 - 提交前运行 `gofmt`，保证 `go vet` 通过。
-- 日志输出到控制台，格式为 时间 + 前缀 + 正文（`log.Lmsgprefix`），前缀 `[wetype]`；各来源的日志前缀为 `[wetype-渠道名]`（如 `[wetype-wechat]`），由 `cmd/wetype` 创建后传给来源。
+- 日志输出到控制台，格式为 时间 + 前缀 + 正文（`log.Lmsgprefix`），前缀 `[talktype]`；各来源的日志前缀为 `[talktype-渠道名]`（如 `[talktype-wechat]`），由 `cmd/talktype` 创建后传给来源。
 - 注释、日志、提交信息、文档使用中文，与现有代码保持一致。
 - `config.json` 只放各来源共用的配置（`source`、`login`、`reconnect`、`inject`、`ack`）。各来源的地址和协议参数内置在各自的包里；凭证、本人身份、飞书站点由扫码自动获得，存进 `*_token.json`。不要为这些加配置项。新增共用配置项时同步更新 `internal/config` 的结构与默认值、根目录 `config.json`、README「配置说明」表格；测试会检查根目录 `config.json` 与默认值一致，且不允许未知字段。
 - 测试与被测文件同目录，命名 `xxx_test.go`。Windows 专属测试用 `_windows_test.go` 后缀。

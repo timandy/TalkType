@@ -1,4 +1,4 @@
-// WeType 把收到的文本消息输入到当前光标处并回车（不占用剪贴板），
+// TalkType 把收到的文本消息输入到当前光标处并回车（不占用剪贴板），
 // 或输入到用 Alt+. 锁定的窗口或终端（终端在后台直接写入，不切换窗口）。
 //
 // 消息来源可替换：
@@ -24,16 +24,16 @@ import (
 	"syscall"
 	"time"
 
-	"wetype/internal/config"
-	"wetype/internal/delivery"
-	"wetype/internal/delivery/winlock"
-	"wetype/internal/delivery/wintype"
-	"wetype/internal/source"
-	"wetype/internal/source/console"
-	"wetype/internal/source/feishu"
-	"wetype/internal/source/wechat"
-	"wetype/internal/source/wecom"
-	"wetype/internal/store"
+	"github.com/timandy/talktype/internal/config"
+	"github.com/timandy/talktype/internal/delivery"
+	"github.com/timandy/talktype/internal/delivery/winlock"
+	"github.com/timandy/talktype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/source"
+	"github.com/timandy/talktype/internal/source/console"
+	"github.com/timandy/talktype/internal/source/feishu"
+	"github.com/timandy/talktype/internal/source/wechat"
+	"github.com/timandy/talktype/internal/source/wecom"
+	"github.com/timandy/talktype/internal/store"
 )
 
 const consoleCursorDelay = 3 * time.Second
@@ -52,11 +52,11 @@ const (
 // 日志格式：时间在最前，然后是前缀（log.Lmsgprefix 把前缀从行首移到时间之后、正文之前）。
 const logFlags = log.LstdFlags | log.Lmsgprefix
 
-var logger = log.New(os.Stdout, "[wetype] ", logFlags)
+var logger = log.New(os.Stdout, "[talktype] ", logFlags)
 
-// newSourceLogger 返回带渠道名前缀的日志，如 [wetype-wechat]，多个来源同时运行时用来区分。
+// newSourceLogger 返回带渠道名前缀的日志，如 [talktype-wechat]，多个来源同时运行时用来区分。
 func newSourceLogger(name string) *log.Logger {
-	return log.New(os.Stdout, "[wetype-"+name+"] ", logFlags)
+	return log.New(os.Stdout, "[talktype-"+name+"] ", logFlags)
 }
 
 func main() {
@@ -70,7 +70,7 @@ func main() {
 	}
 	wintype.SetupConsole()
 
-	configPath := flag.String("config", "config.json", "配置文件路径；相对路径按 wetype.exe 所在目录解析（不是当前目录），凭证文件放在配置文件所在目录")
+	configPath := flag.String("config", "config.json", "配置文件路径；相对路径按 talktype.exe 所在目录解析（不是当前目录），凭证文件放在配置文件所在目录")
 	sourceName := flag.String("source", "", "临时覆盖 config.json 的 source：wechat（微信）、feishu（飞书）、wecom（企业微信）或 console（调试用，从本窗口逐行输入），不区分大小写；多个用英文逗号分隔，如 wechat,feishu，按顺序逐个扫码")
 	relogin := flag.Bool("relogin", false, "强制重新扫码登录（wechat、feishu、wecom）：按配置顺序逐个来源重新扫码，扫成功才覆盖旧凭证，没扫成功的来源沿用旧凭证")
 	lock := flag.Bool("lock", false, "在目标终端中运行：通知正在运行的本程序实例锁定该终端")
@@ -118,7 +118,7 @@ func main() {
 		logger.Println("快捷键：Alt+. 锁定当前窗口或终端，在其他目标中按下则切换，在已锁定的目标中按下则解除；Alt+/ 在任意位置解除锁定")
 	}
 
-	// 先打印 wetype 自己的启动信息，再创建各来源（来源创建时会打印各自的凭证文件等日志）。
+	// 先打印 talktype 自己的启动信息，再创建各来源（来源创建时会打印各自的凭证文件等日志）。
 	names := cfg.Sources()
 	consoleOnly := len(names) == 1 && names[0] == config.SourceConsole
 	if !consoleOnly && !*relogin {
@@ -268,7 +268,7 @@ func runLockCommand(lock bool) int {
 	return 0
 }
 
-// exeDir 返回 wetype.exe 所在目录；取不到时返回空串（此时相对路径相对当前目录）。
+// exeDir 返回 talktype.exe 所在目录；取不到时返回空串（此时相对路径相对当前目录）。
 func exeDir() string {
 	exe, err := os.Executable()
 	if err != nil {

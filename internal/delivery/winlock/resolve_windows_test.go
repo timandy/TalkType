@@ -5,7 +5,7 @@ package winlock
 import (
 	"testing"
 
-	"wetype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/delivery/wintype"
 )
 
 func TestIsDescendant(t *testing.T) {

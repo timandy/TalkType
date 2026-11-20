@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"wetype/internal/browser"
+	"github.com/timandy/talktype/internal/browser"
 )
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

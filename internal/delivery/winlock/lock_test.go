@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"wetype/internal/delivery/wintype"
+	"github.com/timandy/talktype/internal/delivery/wintype"
 )
 
 type fixture struct {
@@ -442,7 +442,7 @@ func TestNotificationsDoNotMentionProgramName(t *testing.T) {
 	f.m.Toggle() // 本程序所在终端
 	f.m.LockConsolePID(99)
 	for _, n := range f.notes {
-		if strings.Contains(strings.ToLower(n[0]+n[1]), "wetype") || strings.Contains(n[0]+n[1], ".exe") {
+		if strings.Contains(strings.ToLower(n[0]+n[1]), "talktype") || strings.Contains(n[0]+n[1], ".exe") {
 			t.Errorf("notification mentions program name: %v", n)
 		}
 	}
